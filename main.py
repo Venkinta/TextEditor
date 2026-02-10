@@ -1,17 +1,29 @@
-import tkinter as tk  # common alias
-from tkinter import *
-from tkinter import ttk
-from cursor import cursor
+import constructor
+from point import Point
+import triangle
+import triangulation
+import numpy as np
+import tkinter as tk  # always standard to alias as tk
 
-root = tk.Tk()  # create the main window
-root.title("My App")
-root.geometry("400x300")  # width x height
-canvas = Canvas(root, width = 500, height = 400, background='gray75')
 
-canvas.create_text(130, 100, text='A', anchor='nw', font='TkMenuFont', fill='red')
-pointer = cursor(width = 10, height = 50)
-pointer.draw(canvas =canvas ,xo=100,yo=100)
+class MyCanvas(tk.Canvas):
+    def draw(self, objects):
+        for obj in objects:
+            if hasattr(obj, 'draw'):
+                obj.draw(self)
 
-canvas.pack(fill="both", expand=True)
-root.mainloop()  # starts the event loop
 
+root = tk.Tk()  # this creates the application window
+root.title("My First GUI")  # optional, just sets the window title
+root.geometry("120x120")   # optional, width x height
+canvas = MyCanvas(root, width=120, height=120, background='white')
+
+
+points = []
+points = [Point(*np.random.randint(100, size=2)) for _ in range(30)]
+
+canvas.pack()
+canvas.draw(points)
+
+
+root.mainloop()
