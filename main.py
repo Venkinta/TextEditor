@@ -21,6 +21,30 @@ triangulation.add_triangle(super_triangle)
 
 for point in points:
     badTriangles = []
+    edge_count = {}
     for triangle in triangulation.triangles:
         ct.orientCCW(triangle)
+        if ct.checkCircumcentre(triangle, point):
+            badTriangles.append(triangle)
+            ct.updatebadedges(edge_count,triangle)
+            
+    polygon = []
+    for triangle in badTriangles:
+        for edge in triangle.edges():
+            if edge_count.get(edge,0) == 1: # edge is shared by more than one bad triangle
+                polygon.append(edge)
+                
+    bad_set = set(badTriangles)
+    triangulation.triangles = [t for t in triangulation.triangles if t not in bad_set]
+    
+    for edge in polygon:
+        newTriangle = Triangle(*edge, point)
+        triangulation.add_triangle(newTriangle)
         
+super_vertices = {*super_triangle.vertices()}
+triangulation.triangles = [t for t in triangulation.triangles if not any(v in super_vertices for v in t.vertices())]
+    
+    
+    
+        
+                    

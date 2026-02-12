@@ -6,4 +6,14 @@ class Triangle:
         self.b = b
         self.c = c
         self.neighbours = neighbours
+        
+    def vertices(self):
+        return self.a,self.b,self.c
+        
+    def edges(self):
+        return [
+            frozenset((self.a, self.b)),
+            frozenset((self.b, self.c)),
+            frozenset((self.c, self.a)),
+        ]
 

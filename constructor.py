@@ -55,6 +55,9 @@ def checkCircumcentre(triangle,point):
 
     return det
  
+def updatebadedges(edge_dict,triangle):
+    for edge_dict in triangle.edges():
+        dict[edge_dict] = dict.get(edge_dict,0) + 1
 
     
     
