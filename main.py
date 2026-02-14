@@ -5,6 +5,8 @@ from editor import Editor
 from snapengine import SnapEngine
 from pygame_widgets.button import Button
 import pygame_widgets
+from mesher import Mesher
+
 
 
 pygame.init()
@@ -44,11 +46,8 @@ while running:
             if editor.finished:
                 lines = editor.lines
                 mesher = Mesher(screen, lines)
+                mesher.mesh()
                 current_state = "MESHER"
-
-        elif current_state == "MESHER":
-            mesher.update(events)
-            mesher.draw()
 
 
     # --- Fixed Update (if you had physics, it would go here) ---

@@ -2,24 +2,46 @@ from triangulation import Triangulation
 from triangle import Triangle
 from point import Point
 import inspect
+import numpy as np 
 
 def create_super_triangle(points):
-    print("Called from:", inspect.stack()[1].function)
-    minx = min(p.x for p in points)
-    miny = min(p.y for p in points)
+    """Creates a triangle large enough to contain all points with massive padding."""
+    min_x = min(p.x for p in points)
+    max_x = max(p.x for p in points)
+    min_y = min(p.y for p in points)
+    max_y = max(p.y for p in points)
 
-    maxx = max(p.x for p in points)
-    maxy = max(p.y for p in points)
+    dx = max_x - min_x
+    dy = max_y - min_y
+    dmax = max(dx, dy)
+    mid_x = (min_x + max_x) / 2
+    mid_y = (min_y + max_y) / 2
 
+    # Scale factor 20 ensures the super-triangle doesn't cause precision issues
+    # near the edges of your actual data.
+    p1 = Point(mid_x - 20 * dmax, mid_y - dmax)
+    p2 = Point(mid_x + 20 * dmax, mid_y - dmax)
+    p3 = Point(mid_x, mid_y + 20 * dmax)
 
-    pointa = Point(minx,miny)   #lower left
-    pointb = Point(2 * maxx,miny)   #lower right
-    pointc = Point(minx,2*maxy)   #upper left
+    return Triangle(p1, p2, p3)
 
-    fiangle = Triangle(pointa,pointb,pointc)
+def checkCircumcentre(triangle, point):
+    """Standard determinant-based circumcircle check."""
+    # Ensure CCW orientation for consistent results
+    orientCCW(triangle)
     
-    return fiangle
-    
+    # Coordinates relative to the test point
+    ax, ay = triangle.a.x - point.x, triangle.a.y - point.y
+    bx, by = triangle.b.x - point.x, triangle.b.y - point.y
+    cx, cy = triangle.c.x - point.x, triangle.c.y - point.y
+
+    # Determinant of the 3x3 matrix (incircle test)
+    det = (
+        (ax*ax + ay*ay) * (bx*cy - cx*by) -
+        (bx*bx + by*by) * (ax*cy - cx*ay) +
+        (cx*cx + cy*cy) * (ax*by - bx*ay)
+    )
+    return det > 0   
 
 def orientCCW(triangle):
     a = triangle.a
@@ -33,31 +55,12 @@ def orientCCW(triangle):
         triangle.b, triangle.c = triangle.c, triangle.b
 
         
-def checkCircumcentre(triangle,point):
-    
-    a = triangle.a
-    b = triangle.b
-    c = triangle.c
-    d = point
-    
-    ax = a.x - d.x
-    ay = a.y - d.y
-    bx = b.x - d.x
-    by = b.y - d.y
-    cx = c.x - d.x
-    cy = c.y - d.y
 
-    det = ((
-        (ax*ax + ay*ay) * (bx*cy - by*cx)
-        - (bx*bx + by*by) * (ax*cy - ay*cx)
-        + (cx*cx + cy*cy) * (ax*by - ay*bx)
-    ) > 0) 
-
-    return det
  
-def updatebadedges(edge_dict,triangle):
-    for edge_dict in triangle.edges():
-        dict[edge_dict] = dict.get(edge_dict,0) + 1
+def updatebadedges(edge_count, triangle):
+    for edge in triangle.edges():
+        edge_count[edge] = edge_count.get(edge, 0) + 1
+
 
     
     
