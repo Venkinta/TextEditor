@@ -63,4 +63,21 @@ def updatebadedges(edge_count, triangle):
 
 
     
-    
+
+#functions meant for mesher.py
+
+def cross2d(u, v):
+    return u[0]*v[1] - u[1]*v[0]
+
+def intersect(line1, line2):
+    p = np.array([line1.a.x, line1.a.y])
+    r = line1.vector
+    q = np.array([line2.a.x, line2.a.y])
+    s = line2.vector
+
+    rxs = cross2d(r, s)
+    if abs(rxs) < 1e-9:
+        return None  # parallel or collinear
+
+    t = cross2d(q - p, s) / rxs
+    return p + t * r

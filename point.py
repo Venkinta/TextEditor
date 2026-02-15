@@ -1,3 +1,5 @@
+import numpy as np
+
 class Point:
     def __init__(self, x, y):
         self.x = float(x)
@@ -14,3 +16,13 @@ class Point:
 
     def __repr__(self):
         return f"P({self.x}, {self.y})"
+    
+    def __sub__(self, other):
+        if isinstance(other, Point):
+            return np.array([self.x - other.x, self.y - other.y])
+        return np.array([self.x - other[0], self.y - other[1]])
+
+    def __add__(self, other):
+        if isinstance(other, Point):
+            return np.array([self.x + other.x, self.y + other.y])
+        return np.array([self.x + other[0], self.y + other[1]])
