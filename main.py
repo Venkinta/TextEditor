@@ -7,7 +7,7 @@ from pygame_widgets.button import Button
 import pygame_widgets
 from mesher import Mesher
 from quad import Quad
-
+from camera import Camera
 
 
 pygame.init()
@@ -27,6 +27,7 @@ running = True
 dt = 1 / 60 
 accumulator = 0.0
 
+camera = Camera()
 
 # Main loop
 while running:
@@ -39,9 +40,12 @@ while running:
     for event in events:
         if event.type == pygame.QUIT:
             running = False
+
+        if event.type == pygame.MOUSEWHEEL:
+            camera.handle_zoom(pygame.mouse.get_pos(), event.y)
             
         if current_state == "EDITOR":
-            editor.handle_event(event)
+            editor.handle_event(event,camera)
             editor.update_buttons(events)
 
             if editor.finished:
@@ -59,10 +63,10 @@ while running:
 
     screen.fill("black")
     if current_state == "EDITOR":
-        editor.draw(screen)
+        editor.draw(screen,camera)
         editor.update_buttons(events)
     elif current_state == "MESHER":
-        mesher.draw(screen)
+        mesher.draw(screen,camera)
     pygame.display.flip()
 
 pygame.quit()

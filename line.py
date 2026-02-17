@@ -1,5 +1,6 @@
 from point import Point
 import pygame
+from camera import Camera
 
 class Line:
     def __init__(self, a, b):
@@ -7,9 +8,9 @@ class Line:
         self.a = a if isinstance(a, Point) else Point(a[0], a[1])
         self.b = b if isinstance(b, Point) else Point(b[0], b[1])
         
-    def draw(self, screen, color=(255, 255, 255), width=4):
-        # Pygame line needs tuples, so we access .x and .y
-        pygame.draw.line(screen, color, (self.a.x, self.a.y), (self.b.x, self.b.y), width)
+    def draw(self, screen, camera, color=(255, 255, 255), width=1):
+        # Corrected method name
+        camera.draw_line(screen, self, color, width)
         
     @property   
     def vector(self):

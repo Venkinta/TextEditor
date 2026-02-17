@@ -1,3 +1,4 @@
+from camera import Camera
 class Triangle:
     def __init__(self, a,b,c,neighbours=None):
         if neighbours is None:
@@ -16,4 +17,8 @@ class Triangle:
             frozenset((self.b, self.c)),
             frozenset((self.c, self.a)),
         ]
+    
+    def draw(self, screen, camera, color=(100, 100, 250), width=1):
+            # We pass the list of 3 Point objects directly
+        camera.draw_polygon([self.a, self.b, self.c], screen, color, width)
 

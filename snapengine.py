@@ -1,43 +1,41 @@
-
-import pygame
-import math
-from line import Line
-
-
 class SnapEngine:
     def __init__(self, pixel_radius=10):
-        self.radius = pixel_radius
-        self.sq_radius = pixel_radius ** 2
+        self.pixel_radius = pixel_radius
 
-    def get_snapped_pos(self, current_pos, lines, anchor_pos=None):
+    # Inside snapengine.py
+
+    def get_snapped_pos(self, current_world_pos, lines, camera_scale, anchor_pos=None):
         """
-        Calculates the best snap position.
-        1. Checks for Vertex Snaps (endpoints of existing lines).
-        2. If no vertex snap and anchor_pos exists, checks Axis Snaps (H/V).
+        Calculates the best snap position in World Coordinates.
         """
-        x, y = current_pos
+        # CHANGE THIS:
+        wx = current_world_pos.x
+        wy = current_world_pos.y
         
-        # --- Priority 1: Vertex Snapping (Snap to existing points) ---
+        # 1. Convert pixel sensitivity to world sensitivity
+        world_radius = self.pixel_radius / camera_scale
+        world_sq_radius = world_radius ** 2
+        
+        # --- Priority 1: Vertex Snapping ---
         for line in lines:
-            # Check both start (a) and end (b) of every line
             for pt in [line.a, line.b]:
-                # Assuming pt is (x, y) or has .x .y
-                px, py = pt if isinstance(pt, tuple) else (pt.x, pt.y)
+                # This is already safe because Line ensures pt is a Point
+                px, py = pt.x, pt.y 
                 
-                dist_sq = (x - px)**2 + (y - py)**2
-                if dist_sq <= self.sq_radius:
-                    return (px, py) # Return immediately on first snap
+                dist_sq = (wx - px)**2 + (wy - py)**2
+                if dist_sq <= world_sq_radius:
+                    return pt # Return the actual Point object!
 
-        # --- Priority 2: Axis Snapping (Horizontal/Vertical) ---
-        # Only happens if we have a starting point (anchor_pos)
+        # --- Priority 2: Axis Snapping ---
         if anchor_pos:
-            ax, ay = anchor_pos
+            # anchor_pos is also a Point now
+            ax, ay = anchor_pos.x, anchor_pos.y
             
-            # Snap Y (Horizontal line)
-            if abs(y - ay) < self.radius:
-                y = ay
-            # Snap X (Vertical line)
-            if abs(x - ax) < self.radius:
-                x = ax
+            if abs(wy - ay) < world_radius:
+                wy = ay
+            if abs(wx - ax) < world_radius:
+                wx = ax
 
-        return (x, y)
+        # Return a new Point instead of a tuple to keep the system consistent
+        from point import Point
+        return Point(wx, wy)

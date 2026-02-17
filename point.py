@@ -5,24 +5,35 @@ class Point:
         self.x = float(x)
         self.y = float(y)
 
-    # This allows set() and dict() to treat identical coordinates as the same key
     def __eq__(self, other):
-        if not isinstance(other, Point):
-            return False
+        if not isinstance(other, Point): return False
+        # Using math.isclose is safer for floats, but this works for now
         return self.x == other.x and self.y == other.y
 
     def __hash__(self):
         return hash((self.x, self.y))
 
     def __repr__(self):
-        return f"P({self.x}, {self.y})"
-    
-    def __sub__(self, other):
-        if isinstance(other, Point):
-            return np.array([self.x - other.x, self.y - other.y])
-        return np.array([self.x - other[0], self.y - other[1]])
+        return f"P({self.x:.3f}, {self.y:.3f})"
 
+    # --- Math Operations that return Points ---
     def __add__(self, other):
-        if isinstance(other, Point):
-            return np.array([self.x + other.x, self.y + other.y])
-        return np.array([self.x + other[0], self.y + other[1]])
+        dx = other.x if hasattr(other, 'x') else other[0]
+        dy = other.y if hasattr(other, 'y') else other[1]
+        return Point(self.x + dx, self.y + dy)
+
+    def __sub__(self, other):
+        dx = other.x if hasattr(other, 'x') else other[0]
+        dy = other.y if hasattr(other, 'y') else other[1]
+        return Point(self.x - dx, self.y - dy)
+
+    # --- Utility Methods ---
+    def distance_to(self, other):
+        """Used by the SnapEngine for threshold checks."""
+        dx = self.x - (other.x if hasattr(other, 'x') else other[0])
+        dy = self.y - (other.y if hasattr(other, 'y') else other[1])
+        return np.sqrt(dx**2 + dy**2)
+
+    def to_tuple(self):
+        """Quick conversion for Pygame calls."""
+        return (self.x, self.y)

@@ -22,7 +22,6 @@ class Quad:
             frozenset([self.points[3], self.points[0]])
         ]
     
-    def draw(self, screen):
-        # Pygame can draw polygons easily
-        coords = [(p.x, p.y) for p in self.points]
-        pygame.draw.polygon(screen, (100, 255, 100), coords, 1) # Green for quads!
+    def draw(self, screen, camera, color=(100, 255, 100), width=1):
+        # self.points is already [p1, p2, p3, p4]
+        camera.draw_polygon(self.points, screen, color, width)

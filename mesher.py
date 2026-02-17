@@ -38,8 +38,8 @@ class Mesher:
         # 4. Generate Layers
         layers = [self.boundary_points]
         n_layers = 3
-        growth_factor = 1.2
-        thickness = 6
+        growth_factor = 1.3
+        thickness = 5
         
         for i in range(n_layers):
             next_layer = self.boundary_layer(layers[-1], scaling_factor=thickness)
@@ -54,7 +54,7 @@ class Mesher:
         inner_ring = layers[-1]
         
         # Generate Steiner points ONLY inside this inner ring
-        self.create_steiner_points(inner_ring, r=20.0) 
+        self.create_steiner_points(inner_ring, r=20) 
         
         # Convert inner_ring and Steiner points to Point objects for Bowyer-Watson
         inner_ring_pts = [Point(p[0], p[1]) for p in inner_ring]
@@ -65,13 +65,16 @@ class Mesher:
         # 4. Triangulate the core
         self.triangulation = Bowyer_watson(all_interior_pts)
 
+        message = 'generated ' + repr(len(self.triangulation.triangles)) + ' cells'
+        print(message)
+
 
 
         
         
     def create_boundary_points(self, ordered_vertices):
         all_points = []
-        spacing = 45
+        spacing = 35
 
         for i in range(len(ordered_vertices)):
             # Get the current segment (p1 to p2)
@@ -99,34 +102,41 @@ class Mesher:
         mask = polygon_path.contains_points(self.points)
         steiner_points = self.points[mask]  # only points truly inside polygon
         
-    def create_steiner_points(self, boundary_points, r=15.0, k=30):
+    def create_steiner_points(self, boundary_points, r=550, k=30):
         if boundary_points is None or len(boundary_points) < 3:
             raise ValueError("Boundary polygon not defined properly.")
 
         polygon = Path(boundary_points)
         
-        # 1. Bounding box & Grid Setup
+        # 1. Bounding box
         xmin, ymin = np.min(boundary_points, axis=0)
         xmax, ymax = np.max(boundary_points, axis=0)
         
-        w = r / np.sqrt(2)  # Cell size
+        # --- SAFETY CHECK ---
+        # If the grid is going to be massive, stop before we crash
+        w = r / np.sqrt(2)
         cols = int(np.ceil((xmax - xmin) / w))
         rows = int(np.ceil((ymax - ymin) / w))
         
-        # Grid stores the actual point [x, y] or None
-        grid = np.full((cols, rows), None, dtype=object)
+        if cols * rows > 500000: # Half a million cells limit
+            print(f"Warning: Grid too dense ({cols}x{rows}). Increase 'r'.")
+            self.points = np.array([])
+            return
 
+        grid = np.full((cols, rows), None, dtype=object)
         points = []
         active = []
 
         def get_grid_coords(p):
-            grid_x = int((p[0] - xmin) / w)
-            grid_y = int((p[1] - ymin) / w)
-            return grid_x, grid_y
+            gx = int((p[0] - xmin) / w)
+            gy = int((p[1] - ymin) / w)
+            return gx, gy
 
-        # --- Step 1: Initial random point ---
+        # --- Step 1: Initial Point (with Safety) ---
         found_start = False
-        while not found_start:
+        attempts = 0
+        while not found_start and attempts < 1000:
+            attempts += 1
             p0 = np.random.uniform([xmin, ymin], [xmax, ymax])
             if polygon.contains_point(p0):
                 points.append(p0)
@@ -134,6 +144,11 @@ class Mesher:
                 gx, gy = get_grid_coords(p0)
                 grid[gx, gy] = p0
                 found_start = True
+        
+        if not found_start:
+            print("Could not find a starting point inside the polygon!")
+            self.points = np.array([])
+            return
 
         # --- Step 2: Expansion ---
         while active:
@@ -143,19 +158,15 @@ class Mesher:
 
             for _ in range(k):
                 angle = np.random.uniform(0, 2 * np.pi)
-                radius = np.random.uniform(r, 2 * r)
-                candidate = base_point + radius * np.array([np.cos(angle), np.sin(angle)])
+                rad = np.random.uniform(r, 2 * r)
+                candidate = base_point + rad * np.array([np.cos(angle), np.sin(angle)])
 
-                # Boundary Check
+                # 1. Fast Bounding Box Check
                 if not (xmin <= candidate[0] <= xmax and ymin <= candidate[1] <= ymax):
                     continue
-                if not polygon.contains_point(candidate):
-                    continue
-
-                # Grid Check (The "Secret Sauce")
-                gx, gy = get_grid_coords(candidate)
                 
-                # Check 5x5 neighborhood
+                # 2. Fast Grid Check (The "Secret Sauce")
+                gx, gy = get_grid_coords(candidate)
                 is_far_enough = True
                 for i in range(max(0, gx - 2), min(cols, gx + 3)):
                     for j in range(max(0, gy - 2), min(rows, gy + 3)):
@@ -165,13 +176,20 @@ class Mesher:
                                 is_far_enough = False
                                 break
                     if not is_far_enough: break
+                
+                if not is_far_enough:
+                    continue
 
-                if is_far_enough:
-                    points.append(candidate)
-                    active.append(candidate)
-                    grid[gx, gy] = candidate
-                    found = True
-                    break
+                # 3. Slow Polygon Check (ONLY do this if it passed everything else)
+                if not polygon.contains_point(candidate):
+                    continue
+
+                # If we got here, the point is valid!
+                points.append(candidate)
+                active.append(candidate)
+                grid[gx, gy] = candidate
+                found = True
+                break
 
             if not found:
                 active.pop(idx)
@@ -230,32 +248,20 @@ class Mesher:
         return area # area < 0 is CCW, area > 0 is CW
 
 
-    def draw(self, screen):
+    def draw(self, screen,camera):
         # --- Draw boundary lines ---
         if hasattr(self, "lines"):
             for line in self.lines:
-                line.draw(screen, color=(255, 255, 255), width=2)
+                line.draw(screen,camera, color=(255, 255, 255), width=2)
                 
         # Draw Boundary Layer Quads
         if hasattr(self, 'boundary_elements'):
             for quad in self.boundary_elements:
-                quad.draw(screen)
+                quad.draw(screen,camera)
 
         # --- Draw triangulation ---
         if hasattr(self, "triangulation") and self.triangulation:
-            for triangle in self.triangulation.triangles:
-                # Draw edges of the triangle
-                edges = triangle.edges()
-                for edge in edges:
-                    # edge is a frozenset of Points
-                    a, b = tuple(edge)
-                    pygame.draw.line(
-                        screen,
-                        (100, 200, 255),  # light blue for triangles
-                        (a.x, a.y),
-                        (b.x, b.y),
-                        1
-                    )
+            self.triangulation.draw(screen,camera)
                     
     def create_boundary_layers(self, n_layers=1, scaling_factor=4):
         layers = [self.boundary_points]  # start with original

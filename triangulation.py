@@ -14,3 +14,7 @@ class Triangulation:
             self.triangles.remove(triangle)
         except ValueError:
             pass
+
+    def draw(self,screen,camera, color=(0, 0, 255), width=2):
+        for triangle in self.triangles:
+            triangle.draw(screen,camera, color, width)
