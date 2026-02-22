@@ -45,6 +45,7 @@ class Mesher:
             next_layer = self.boundary_layer(layers[-1], scaling_factor=thickness)
             layers.append(next_layer)
             thickness *= growth_factor # Geometric stretching
+            
 
         # 5. Connect them into Quads
         self.boundary_elements = self.connect_layers(layers)
@@ -181,7 +182,8 @@ class Mesher:
                     continue
 
                 # 3. Slow Polygon Check (ONLY do this if it passed everything else)
-                if not polygon.contains_point(candidate):
+                buffer = r *1.5
+                if not polygon.contains_point(candidate,radius=buffer):
                     continue
 
                 # If we got here, the point is valid!
