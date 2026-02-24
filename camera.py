@@ -1,4 +1,6 @@
 import pygame
+from OpenGL.GL import *
+import math
 
 class Camera:
     def __init__(self, scale=1.0, offset=None):
@@ -6,8 +8,7 @@ class Camera:
         self.offset = offset if offset is not None else [0.0, 0.0]
 
     def to_screen(self, world_point):
-        """Helper to convert a Point or [x,y] to Screen Pixels."""
-        # Handle both Point objects and raw lists/tuples
+        """Converts World (Meters) to Screen (Pixels)."""
         px = world_point.x if hasattr(world_point, 'x') else world_point[0]
         py = world_point.y if hasattr(world_point, 'y') else world_point[1]
         
@@ -16,7 +17,7 @@ class Camera:
         return (sx, sy)
 
     def screen_to_world(self, screen_pos):
-        """Inverse: Pixels to World Meters."""
+        """Converts Screen (Pixels) to World (Meters)."""
         sx, sy = screen_pos
         wx = (sx / self.scale) - self.offset[0]
         wy = (sy / self.scale) - self.offset[1]
@@ -33,14 +34,49 @@ class Camera:
         
         self.scale *= zoom_factor
 
-    def draw_line(self, screen, line, color, width):
+    # --- DRAWING METHODS (OPENGL) ---
+
+    def draw_line(self, screen, line, color=(255, 255, 255), width=1):
+        """Draws a CAD Line object (handles world-to-screen conversion)."""
         p0 = self.to_screen(line.a)
         p1 = self.to_screen(line.b)
-        pygame.draw.line(screen, color, p0, p1, width)
+        self.draw_screen_line(screen, p0, p1, color, width)
 
-    def draw_polygon(self, polygon_vertices, screen, color, width):
-        # We create a NEW list of screen points so we don't 
-        # accidentally overwrite the triangle's actual data
+    def draw_screen_line(self, screen, p0, p1, color=(255, 255, 255), width=1):
+        """Draws a line using raw screen coordinates (Pixels). Useful for UI/Previews."""
+        r, g, b = [c/255.0 for c in color]
+        glLineWidth(width)
+        glBegin(GL_LINES)
+        glColor3f(r, g, b)
+        glVertex2f(p0[0], p0[1])
+        glVertex2f(p1[0], p1[1])
+        glEnd()
+
+    def draw_polygon(self, polygon_vertices, screen, color=(100, 100, 250), width=1):
+        """Draws Triangles/Quads (handles world-to-screen conversion)."""
+        r, g, b = [c/255.0 for c in color]
         screen_points = [self.to_screen(p) for p in polygon_vertices]
 
-        pygame.draw.polygon(screen, color, screen_points, width)
+        if width == 0: # Filled
+            glBegin(GL_POLYGON)
+        else: # Outline
+            glLineWidth(width)
+            glBegin(GL_LINE_LOOP)
+            
+        glColor3f(r, g, b)
+        for p in screen_points:
+            glVertex2f(p[0], p[1])
+        glEnd()
+
+    def draw_circle(self, screen, color, center_screen, radius, width=1):
+        """Draws a circle using screen coordinates. Useful for snapping points."""
+        r, g, b = [c/255.0 for c in color]
+        glColor3f(r, g, b)
+        glLineWidth(width)
+        glBegin(GL_LINE_LOOP)
+        for i in range(32):
+            angle = 2 * math.pi * i / 32
+            x = center_screen[0] + math.cos(angle) * radius
+            y = center_screen[1] + math.sin(angle) * radius
+            glVertex2f(x, y)
+        glEnd()

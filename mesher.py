@@ -66,6 +66,9 @@ class Mesher:
         # 4. Triangulate the core
         self.triangulation = Bowyer_watson(all_interior_pts)
 
+        # 5. NEW: Filter out triangles that cross outside the inner ring
+        self.filter_triangles(inner_ring)
+
         message = 'generated ' + repr(len(self.triangulation.triangles)) + ' cells'
         print(message)
 
@@ -350,7 +353,29 @@ class Mesher:
                 
         return elements
 
+  
     def _to_point(self, p):
         # Helper to handle the numpy vs Point confusion
         if isinstance(p, Point): return p
         return Point(p[0], p[1])
+    
+    def filter_triangles(self, inner_ring_points):
+        """Removes triangles whose centroids fall outside the inner boundary ring."""
+        # 1. Create a Path object from the inner ring
+        ring_path = Path(inner_ring_points)
+        
+        # 2. Extract the centroids of all generated triangles
+        centroids = [t.centroid for t in self.triangulation.triangles]
+        
+        # 3. Check which centroids are INSIDE the polygon ring
+        # radius=-1e-5 adds a tiny tolerance so triangles right on the edge aren't deleted
+        mask = ring_path.contains_points(centroids, radius=-1e-5)
+        
+        # 4. Rebuild the triangle list keeping only the valid ones
+        valid_triangles = []
+        for is_inside, triangle in zip(mask, self.triangulation.triangles):
+            if is_inside:
+                valid_triangles.append(triangle)
+                
+        # 5. Update the triangulation object
+        self.triangulation.triangles = valid_triangles

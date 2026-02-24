@@ -5,31 +5,25 @@ from snapengine import SnapEngine
 from pygame_widgets.button import Button
 import pygame_widgets
 from camera import Camera
+import imgui
 
 
 class Editor:
-    def __init__(self,screen):
-        self.lines = []
-        self.snap_engine = SnapEngine(pixel_radius=10)
+    def __init__(self, screen, renderer): # Added renderer here
+            self.lines = []
+            self.snap_engine = SnapEngine(pixel_radius=10)
+            
+            # State
+            self.is_drawing = False
+            self.start_pos = None  
+            self.current_mouse_pos = (0, 0)
+            self.screen = screen
+            self.renderer = renderer # Store it!
+            self.finished = False
         
-        # State
-        self.is_drawing = False
-        self.start_pos = None  # The point where we clicked first
-        self.current_mouse_pos = (0, 0)
-        self.screen = screen
-        self.finished = False
+
         
-        self.setup_ui()
-        
-    def setup_ui(self):
-        
-        self.finish_button = Button(
-            self.screen,
-            50, 50,
-            150, 50,
-            text='Finish',
-            onClick=self.finish
-        )
+
         
     # Update signature to accept camera
     def handle_event(self, event, camera):
@@ -84,35 +78,38 @@ class Editor:
         elif self.lines:
             self.lines.pop()
             
-    def update_buttons(self,events):
-        pygame_widgets.update(events)
 
     def draw(self, screen, camera):
-        # Draw all committed lines (Safe: Line.draw uses camera)
+        # 1. Start ImGui Frame
+        imgui.new_frame()
+        
+        # 2. Define the UI
+        imgui.set_next_window_position(50, 50, imgui.ALWAYS)
+        imgui.begin("Controls", flags=imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_ALWAYS_AUTO_RESIZE)
+        if imgui.button("Finish CAD"):
+            self.finish()
+        imgui.end()
+
+        # 3. Draw your CAD lines (World Space)
         for line in self.lines:
             line.draw(screen, camera)
 
-        # Draw preview line
+        # 4. Draw preview line (Screen Space)
         if self.is_drawing and self.start_pos:
-            # 1. Get current mouse in World Space
             world_mouse = camera.screen_to_world(self.current_mouse_pos)
-
-            # 2. Calculate Snap in World Space
             target_world_pos = self.snap_engine.get_snapped_pos(
-                world_mouse, 
-                self.lines, 
-                camera.scale,
-                self.start_pos
+                world_mouse, self.lines, camera.scale, self.start_pos
             )
             
-            # 3. Convert BOTH points back to Screen Space for drawing
-            # self.start_pos is already World Space (from _handle_click)
             p1_screen = camera.to_screen(self.start_pos)
             p2_screen = camera.to_screen(target_world_pos)
             
-            # 4. Draw using Screen Coordinates
-            pygame.draw.line(screen, (150, 150, 150), p1_screen, p2_screen, 1)
-            pygame.draw.circle(screen, (0, 255, 0), p2_screen, 3, 1)
+            camera.draw_screen_line(screen, p1_screen, p2_screen, (150, 150, 150), 1)
+            camera.draw_circle(screen, (0, 255, 0), p2_screen, 3, 1)
+
+        # 5. Render ImGui on top of everything
+        imgui.render()
+        self.renderer.render(imgui.get_draw_data())
             
     def finish(self):
         self.finished = True
