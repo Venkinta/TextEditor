@@ -5,9 +5,10 @@ import numpy as np
 from bowyerwatson import Bowyer_watson
 from point import Point
 import pygame
-from shapely.geometry import Polygon
 import constructor as ct
 from quad import Quad
+from shapely.geometry import Polygon as ShapelyPoly
+from shapely.geometry import Point as ShapelyPoint
 
 import cProfile
 import pstats
@@ -100,21 +101,33 @@ class Mesher:
 
         self.boundary_points = np.vstack(all_points)
         
+        
+        
+        
     def check_points(self):
         #checks if generated points lie inside the boundary
         polygon_path = Path(self.boundary_points)  # your Nx2 array of vertices
         mask = polygon_path.contains_points(self.points)
         steiner_points = self.points[mask]  # only points truly inside polygon
+      
+      
+      
         
     def create_steiner_points(self, boundary_points, r=550, k=30):
+        
+        
         if boundary_points is None or len(boundary_points) < 3:
             raise ValueError("Boundary polygon not defined properly.")
 
-        polygon = Path(boundary_points)
+
         
-        # 1. Bounding box
-        xmin, ymin = np.min(boundary_points, axis=0)
-        xmax, ymax = np.max(boundary_points, axis=0)
+        full_poly = ShapelyPoly(boundary_points)
+        safe_zone = full_poly.buffer(-r * 0.8)
+        xmin, ymin, xmax, ymax = full_poly.bounds
+        
+
+        
+        
         
         # --- SAFETY CHECK ---
         # If the grid is going to be massive, stop before we crash
@@ -122,27 +135,37 @@ class Mesher:
         cols = int(np.ceil((xmax - xmin) / w))
         rows = int(np.ceil((ymax - ymin) / w))
         
+        
         if cols * rows > 500000: # Half a million cells limit
+            
             print(f"Warning: Grid too dense ({cols}x{rows}). Increase 'r'.")
             self.points = np.array([])
             return
 
+
         grid = np.full((cols, rows), None, dtype=object)
         points = []
         active = []
+
 
         def get_grid_coords(p):
             gx = int((p[0] - xmin) / w)
             gy = int((p[1] - ymin) / w)
             return gx, gy
 
+
+
         # --- Step 1: Initial Point (with Safety) ---
         found_start = False
         attempts = 0
+        
         while not found_start and attempts < 1000:
+            
             attempts += 1
             p0 = np.random.uniform([xmin, ymin], [xmax, ymax])
-            if polygon.contains_point(p0):
+            
+            if safe_zone.contains(ShapelyPoint(p0)):
+                
                 points.append(p0)
                 active.append(p0)
                 gx, gy = get_grid_coords(p0)
@@ -156,37 +179,50 @@ class Mesher:
 
         # --- Step 2: Expansion ---
         while active:
+            
             idx = np.random.randint(len(active))
             base_point = active[idx]
             found = False
 
             for _ in range(k):
+                
                 angle = np.random.uniform(0, 2 * np.pi)
                 rad = np.random.uniform(r, 2 * r)
                 candidate = base_point + rad * np.array([np.cos(angle), np.sin(angle)])
 
                 # 1. Fast Bounding Box Check
                 if not (xmin <= candidate[0] <= xmax and ymin <= candidate[1] <= ymax):
+                    
                     continue
                 
                 # 2. Fast Grid Check (The "Secret Sauce")
                 gx, gy = get_grid_coords(candidate)
                 is_far_enough = True
+                
                 for i in range(max(0, gx - 2), min(cols, gx + 3)):
+                    
                     for j in range(max(0, gy - 2), min(rows, gy + 3)):
+                        
                         neighbor = grid[i, j]
+                        
                         if neighbor is not None:
+                            
                             if np.linalg.norm(candidate - neighbor) < r:
+                                
                                 is_far_enough = False
                                 break
-                    if not is_far_enough: break
+                            
+                    if not is_far_enough: 
+                        
+                        break
                 
                 if not is_far_enough:
+                    
                     continue
 
                 # 3. Slow Polygon Check (ONLY do this if it passed everything else)
-                buffer = r *1.5
-                if not polygon.contains_point(candidate,radius=buffer):
+                
+                if not safe_zone.contains(ShapelyPoint(candidate)):
                     continue
 
                 # If we got here, the point is valid!
