@@ -35,14 +35,23 @@ class PhysicsEditor:
             self.finish()
         imgui.end()
         
+        
         if self.selected_line:
+            imgui.set_next_window_size(300, 90)
+            imgui.set_next_window_position(10, 200)
             
-            imgui.begin("Line settings")
+            title = "Line " + str(self.lines.index(self.selected_line)+1) + " settings "
+            self.current_line_idx = self.boundary_types.index(self.selected_line.boundary_type)
+            
+            imgui.begin(title)
+            
             changed, self.current_line_idx = imgui.combo("Condition",self.current_line_idx,self.boundary_types)
             
             if changed:
+                
                 self.selected_line.boundary_type = self.boundary_types[self.current_line_idx]
                 print(self.selected_line.boundary_type)
+                
             imgui.end()
 
         # 4. Critical: "Stamp" the ImGui visuals onto the Pygame screen

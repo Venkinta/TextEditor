@@ -8,8 +8,7 @@ class Line:
         # Convert to Point objects if they are passed as tuples/lists
         self.a = a if isinstance(a, Point) else Point(a[0], a[1])
         self.b = b if isinstance(b, Point) else Point(b[0], b[1])
-        
-        self.boundary_type = None
+        self.boundary_type = "Wall"
         
     def draw(self, screen, camera, color=(255, 255, 255), width=1):
         # Corrected method name
