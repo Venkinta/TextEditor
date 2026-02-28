@@ -93,7 +93,8 @@ def run_app():
 
                 if physicseditor.finished:
                     lines = physicseditor.lines
-                    mesher = Mesher(screen, lines)
+                    mesher = Mesher(screen, lines,physicseditor.n_layers,physicseditor.growth_factor,
+                                    physicseditor.thickness,physicseditor.boundary_spacing,physicseditor.r)
                     mesher.mesh()
                     current_state = "MESHER"
 

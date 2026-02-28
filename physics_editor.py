@@ -15,6 +15,17 @@ class PhysicsEditor:
         self.current_line_idx = 0
         # REMOVE: imgui.create_context()
         # REMOVE: self.renderer = PygameRenderer()
+        
+        
+        
+        #boundary_layers
+        self.n_layers = 4 
+        self.growth_factor = 1.4
+        self.thickness = 4
+        self.boundary_spacing = 35
+        
+        #mesh generation
+        self.r = 20 #20 is good
 
     def draw(self, screen, camera):
         # 2. Tell ImGui a new frame is starting
@@ -29,6 +40,20 @@ class PhysicsEditor:
         changed, self.density = imgui.input_float("Density (rho)", self.density, step=0.1, step_fast=1.0)
         changed, self.viscosity = imgui.input_float("Viscosity (mu)", self.viscosity, step=0.1, step_fast=1.0)
         
+        opened, _ = imgui.collapsing_header("Boundary layer settings")
+        
+        if opened:
+            
+            changed,self.n_layers = imgui.input_int("N. Boundary layers", self.n_layers, step=1, step_fast=1) 
+            changed,self.growth_factor = imgui.input_float("Growth factor", self.growth_factor, step=0.1, step_fast=1.0)
+            changed,self.thickness = imgui.input_float("Thickness", self.thickness, step=0.1, step_fast=1.0)
+            changed,self.boundary_spacing = imgui.input_float("Boundary cell spacing", self.boundary_spacing, step=0.1, step_fast=1.0)
+
+        opened2, _ = imgui.collapsing_header("Mesher settings")
+        
+        if opened2:
+            
+            changed,self.r = imgui.input_float("Mesh size", self.r, step=0.1, step_fast=1.0) 
 
         
         if imgui.button("Proceed to Meshing"):

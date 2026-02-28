@@ -16,36 +16,48 @@ import pstats
 
 
 class Mesher:
-    def __init__(self,screen,lines):
+    def __init__(self,screen,lines,n_layers,growth_factor,thickness,spacing,r):
         self.lines = lines
         self.points = None
         self.boundary_points = None
         self.candidate_points = None
         self.triangulation = None
         self.orientation = None
+        self.thickness_mask = None
+        
+        
+        #boundary_layers
+        self.n_layers = n_layers 
+        self.growth_factor = growth_factor
+        self.thickness = thickness
+        self.boundary_spacing = spacing
+        
+        #mesh generation
+        self.r = r #20 is good
         
     def mesh(self):
-        # 1. Get the vertices in the correct loop order
-        ordered_verts = self.build_polygon() 
+        # 1. Get the lines in the correct loop order
+        ordered_lines = self.build_polygon() 
         
         # 2. Calculate orientation (using the helper we wrote)
         # We pass a numpy array for speed
-        vert_array = np.array([(p.x, p.y) for p in ordered_verts])
+        vert_coords = [(line.a.x, line.a.y) for line in ordered_lines]
+        vert_array = np.array(vert_coords)
         self.orientation = self.polygon_orientation(vert_array)
 
         # 3. Create high-res boundary points based on the ORDERED vertices
-        self.create_boundary_points(ordered_verts) 
+        # Now we have the ordered points and an array with their thicknesses
+        self.create_boundary_points(ordered_lines) 
         
         # 4. Generate Layers
         layers = [self.boundary_points]
-        n_layers = 3
-        growth_factor = 1.3
-        thickness = 5
+
         
-        for i in range(n_layers):
-            next_layer = self.boundary_layer(layers[-1], scaling_factor=thickness)
+        for i in range(self.n_layers):
+            current_factor_array = self.thickness_mask * self.thickness
+            next_layer = self.boundary_layer(layers[-1], current_factor_array)
             layers.append(next_layer)
-            thickness *= growth_factor # Geometric stretching
+            self.thickness *= self.growth_factor # Geometric stretching
             
 
         # 5. Connect them into Quads
@@ -56,7 +68,7 @@ class Mesher:
         inner_ring = layers[-1]
         
         # Generate Steiner points ONLY inside this inner ring
-        self.create_steiner_points(inner_ring, r=20) 
+        self.create_steiner_points(inner_ring, self.r) 
         
         # Convert inner_ring and Steiner points to Point objects for Bowyer-Watson
         inner_ring_pts = [Point(p[0], p[1]) for p in inner_ring]
@@ -77,29 +89,46 @@ class Mesher:
 
         
         
-    def create_boundary_points(self, ordered_vertices):
+    def create_boundary_points(self, ordered_lines):
         all_points = []
-        spacing = 35
+        all_thicknesses = []
+        num_l = len(ordered_lines)
 
-        for i in range(len(ordered_vertices)):
-            # Get the current segment (p1 to p2)
-            p1 = ordered_vertices[i]
-            p2 = ordered_vertices[(i + 1) % len(ordered_vertices)]
+        for i in range(num_l):
+            line = ordered_lines[i]
+            # Wrap around for p2
+            next_line = ordered_lines[(i + 1) % num_l]
+            prev_line = ordered_lines[(i - 1) % num_l]
             
-            start = np.array([p1.x, p1.y])
-            end = np.array([p2.x, p2.y])
+            start = np.array([line.a.x, line.a.y])
+            end = np.array([next_line.a.x, next_line.a.y]) # Use the next line's start as our end
 
             line_vec = end - start
             line_length = np.linalg.norm(line_vec)
-
             if line_length == 0: continue
 
-            n_points = max(1, int(np.floor(line_length / spacing)))
-            # We use linspace to avoid accumulation errors and ensure start/end alignment
+            n_points = max(1, int(np.floor(line_length / self.boundary_spacing)))
             segment_points = np.linspace(start, end, n_points, endpoint=False)
             all_points.append(segment_points)
 
+            # DETERMINING THICKNESS
+            # If this line is a wall, the whole segment is 4.
+            # If the PREVIOUS line was a wall, the first point (the corner) should be 4.
+            if line.boundary_type == "Wall":
+                # (n_points, 1) ensures it plays nice with your coordinate math later
+                seg_mask = np.ones((n_points,1))
+            else:
+                seg_mask = np.zeros((n_points,1))
+            # 2. The Corner: Only the FIRST point of an inlet inherits the wall thickness
+            
+            if line.boundary_type != "Wall" and prev_line.boundary_type == "Wall":
+                seg_mask[0] = 1.0
+
+            all_thicknesses.append(seg_mask)
+        
         self.boundary_points = np.vstack(all_points)
+        # self.thickness_mask now holds our 1.0s and 0.0s
+        self.thickness_mask = np.vstack(all_thicknesses)
         
         
         
@@ -243,27 +272,26 @@ class Mesher:
 
         first = remaining.pop(0)
 
-        start = first.a
+        ordered_lines = [first]
         pivot = first.b
-
-        polygon = [start, pivot]
-
+        
         while remaining:
 
             found = False
 
             for i, line in enumerate(remaining):
 
-                if pivot == line.a:
+                if np.array_equal(pivot,line.a):
                     pivot = line.b
-                    polygon.append(pivot)
+                    ordered_lines.append(line)
                     remaining.pop(i)
                     found = True
                     break
 
-                elif pivot == line.b:
+                elif np.array_equal(pivot,line.b):
+                    
                     pivot = line.a
-                    polygon.append(pivot)
+                    ordered_lines.append(line)
                     remaining.pop(i)
                     found = True
                     break
@@ -271,10 +299,8 @@ class Mesher:
             if not found:
                 raise ValueError("Lines do not form a closed loop")
 
-            if pivot == start:
-                break
 
-        return polygon
+        return ordered_lines
   
     def polygon_orientation(self, polygon_array):
         """
@@ -314,7 +340,7 @@ class Mesher:
 
                         
                         
-    def boundary_layer(self, polygon_points, scaling_factor=4):
+    def boundary_layer(self, polygon_points, scaling_factor):
         """
         polygon_points: np.array of shape (N, 2)
         Returns: np.array of shape (N, 2) representing the offset ring
@@ -384,8 +410,13 @@ class Mesher:
                 p4 = self._to_point(next_layer[j])
                 
                 # Create a Quad
-                new_quad = Quad(p1, p2, p3, p4)
-                elements.append(new_quad)
+                # Simple area check for a quad (sum of two triangles)
+                # If the thickness was 0, p1==p4 and p2==p3, area will be 0.
+                area = 0.5 * abs((p1.x*p2.y + p2.x*p3.y + p3.x*p4.y + p4.x*p1.y) - (p2.x*p1.y + p3.x*p2.y + p4.x*p3.y + p1.x*p4.y))
+                            
+                if area >1e-5:
+                    new_quad = Quad(p1, p2, p3, p4)
+                    elements.append(new_quad)
                 
         return elements
 
