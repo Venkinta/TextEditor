@@ -1,0 +1,22 @@
+import numpy as np
+from scipy import sparse
+
+# --- CELL-CENTERED DATA (Shape: Nc) ---
+# These store the state of the simulation
+P   = np.zeros(Nc)      # Pressure
+U   = np.zeros((Nc, 2)) # Velocity (Ux, Uy)
+Rho = np.ones(Nc)       # Density (Simply a scalar for incompressible)
+Mu  = np.ones(Nc)       # Dynamic Viscosity
+Vol = np.zeros(Nc)      # Cell Area (2D Volume)
+
+# --- FACE DATA (Shape: Nf) ---
+# connectivity
+owner      = np.array([...]) # Index of owner cell
+neighbor   = np.array([...]) # Index of neighbor cell (use -1 for boundaries)
+
+# geometry
+Sf    = np.zeros((Nf, 2)) # Face Area Vector (normal * length)
+magSf = np.zeros(Nf)      # Face length (magnitude of Sf)
+Cf    = np.zeros((Nf, 2)) # Face center coordinates
+df    = np.zeros((Nf, 2)) # Vector between cell centers (P -> N)
+magDf = np.zeros(Nf)      # Distance between cell centers

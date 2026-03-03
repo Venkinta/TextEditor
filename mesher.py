@@ -446,3 +446,16 @@ class Mesher:
                 
         # 5. Update the triangulation object
         self.triangulation.triangles = valid_triangles
+
+
+    def solver_data_pipeline(self):
+        print('Begginning data collection for Solver')
+
+        # 1. We need to get all cells in a list
+
+        Cells = self.boundary_elements + self.triangulation.triangles
+        Nc = len(Cells)
+
+        # We gather cell centres
+        Cell_centres = np.array([cell.centroid for cell in Cells])
+        
