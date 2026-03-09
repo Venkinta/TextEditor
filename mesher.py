@@ -35,6 +35,9 @@ class Mesher:
         #mesh generation
         self.r = r #20 is good
         
+        
+  
+        
     def mesh(self):
         # 1. Get the lines in the correct loop order
         ordered_lines = self.build_polygon() 
@@ -92,16 +95,20 @@ class Mesher:
     def create_boundary_points(self, ordered_lines):
         all_points = []
         all_thicknesses = []
+        all_bc_tags = []  # <--- NEW: To store our 0, 1, 2 tags
+        
+        # Mapping strings to the integers our solver expects
+        bc_map = {"Wall": 0, "Inlet": 1, "Outlet": 2}
+        
         num_l = len(ordered_lines)
 
         for i in range(num_l):
             line = ordered_lines[i]
-            # Wrap around for p2
             next_line = ordered_lines[(i + 1) % num_l]
             prev_line = ordered_lines[(i - 1) % num_l]
             
             start = np.array([line.a.x, line.a.y])
-            end = np.array([next_line.a.x, next_line.a.y]) # Use the next line's start as our end
+            end = np.array([next_line.a.x, next_line.a.y])
 
             line_vec = end - start
             line_length = np.linalg.norm(line_vec)
@@ -111,24 +118,27 @@ class Mesher:
             segment_points = np.linspace(start, end, n_points, endpoint=False)
             all_points.append(segment_points)
 
-            # DETERMINING THICKNESS
-            # If this line is a wall, the whole segment is 4.
-            # If the PREVIOUS line was a wall, the first point (the corner) should be 4.
+            # --- 1. THICKNESS LOGIC (For Geometry) ---
             if line.boundary_type == "Wall":
-                # (n_points, 1) ensures it plays nice with your coordinate math later
-                seg_mask = np.ones((n_points,1))
+                seg_thick = np.ones((n_points, 1))
             else:
-                seg_mask = np.zeros((n_points,1))
-            # 2. The Corner: Only the FIRST point of an inlet inherits the wall thickness
+                seg_thick = np.zeros((n_points, 1))
             
             if line.boundary_type != "Wall" and prev_line.boundary_type == "Wall":
-                seg_mask[0] = 1.0
+                seg_thick[0] = 1.0
+            all_thicknesses.append(seg_thick)
 
-            all_thicknesses.append(seg_mask)
+            # --- 2. BC TAG LOGIC (For Physics) --- <--- NEW
+            # Get the integer ID (default to 0/Wall if something goes wrong)
+            tag = bc_map.get(line.boundary_type, 0)
+            # Every point/segment created from this line gets this tag
+            seg_tags = np.full(n_points, tag)
+            all_bc_tags.append(seg_tags)
         
         self.boundary_points = np.vstack(all_points)
-        # self.thickness_mask now holds our 1.0s and 0.0s
         self.thickness_mask = np.vstack(all_thicknesses)
+        # Flatten the list of tags into one long array
+        self.point_bc_mask = np.concatenate(all_bc_tags)
         
         
         
@@ -449,13 +459,97 @@ class Mesher:
 
 
     def solver_data_pipeline(self):
-        print('Begginning data collection for Solver')
+        print('Beginning data collection for Solver...')
 
-        # 1. We need to get all cells in a list
+        # 1. Pre-calculate a lookup for boundary points -> BC Type
+        # Key: (p1_coords, p2_coords), Value: BC_Type (0, 1, 2)
+        # We use sorted tuples so the order of points in the edge doesn't matter
+        bc_lookup = {}
+        for i in range(len(self.boundary_points)):
+            p1 = self.boundary_points[i]
+            p2 = self.boundary_points[(i + 1) % len(self.boundary_points)]
+            
+            edge_key = tuple(sorted([(p1[0], p1[1]), (p2[0], p2[1])]))
+            bc_lookup[edge_key] = self.point_bc_mask[i]
 
+        # 2. Gather all cells
         Cells = self.boundary_elements + self.triangulation.triangles
         Nc = len(Cells)
+        cell_centers = np.array([cell.centroid for cell in Cells])
+        cell_areas = np.array([cell.area for cell in Cells])
+        
+        # 3. Build Edge Map
+        edge_map = {} 
+        for cell_id, cell in enumerate(Cells):
+            for edge in cell.edges(): # Assuming edge is (Point, Point)
+                # Create a unique key for the edge
+                key = tuple(sorted([(edge[0].x, edge[0].y), (edge[1].x, edge[1].y)]))
+                if key not in edge_map:
+                    edge_map[key] = []
+                edge_map[key].append(cell_id)
 
-        # We gather cell centres
-        Cell_centres = np.array([cell.centroid for cell in Cells])
+        # 4. Populate Face Arrays
+        Nf = len(edge_map)
+        owner = np.zeros(Nf, dtype=np.int32)
+        neighbor = np.full(Nf, -1, dtype=np.int32)
+        Sf = np.zeros((Nf, 2))
+        Cf = np.zeros((Nf, 2))
+        df = np.zeros((Nf, 2))
+        magDf = np.zeros(Nf)
+        boundary_tags = np.full(Nf, -1) # -1: Internal, 0: Wall, 1: Inlet, 2: Outlet
+
+        for face_idx, (edge_key, cell_ids) in enumerate(edge_map.items()):
+            # A. Connectivity
+            owner[face_idx] = cell_ids[0]
+            if len(cell_ids) > 1:
+                neighbor[face_idx] = cell_ids[1]
+                boundary_tags[face_idx] = -1 # Internal
+            else:
+                # B. Boundary Tagging - Look it up in our BC Map!
+                # If it's not in bc_lookup, it might be an internal hole (default to Wall)
+                boundary_tags[face_idx] = bc_lookup.get(edge_key, 0)
+
+            # C. Geometry (Vector math)
+            p1_coords, p2_coords = edge_key
+            p1 = np.array(p1_coords)
+            p2 = np.array(p2_coords)
+            
+            face_center = (p1 + p2) / 2.0
+            vec = p2 - p1
+            normal = np.array([vec[1], -vec[0]]) # Normal vector
+            
+            # Ensure normal points AWAY from owner
+            owner_c = cell_centers[owner[face_idx]]
+            if np.dot(normal, face_center - owner_c) < 0:
+                normal = -normal
+            
+            Sf[face_idx] = normal
+            Cf[face_idx] = face_center
+
+            # D. Distance vector (for diffusion terms)
+            if neighbor[face_idx] != -1:
+                df_vec = cell_centers[neighbor[face_idx]] - owner_c
+            else:
+                df_vec = face_center - owner_c # For BCs, d is center-to-face
+            
+            df[face_idx] = df_vec
+            magDf[face_idx] = np.linalg.norm(df_vec)
+
+        return {
+            'Nc': Nc, #number of cells
+            'Nf': Nf, #number of faces
+            'owner': owner, #each face has an owner ID
+            'neighbor': neighbor, #each face has a neighbour ID
+            'Sf': Sf, #face normal vector
+            'magSf': np.linalg.norm(Sf, axis=1), # face normal vector magnitude
+            'Cf': Cf, #center of face 
+            'df': df, #vector from owner to neighbour
+            'magDf': magDf, #magnitude of vector (distance)
+            'cell_centers': cell_centers, #center of each cell
+            'cell_areas': cell_areas, #area of each cell
+            'boundary_tags': boundary_tags # Tag of each face type -1: Internal, 0: Wall, 1: Inlet, 2: Outlet
+        }
+                
+        
+                
         

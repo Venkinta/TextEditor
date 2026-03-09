@@ -23,6 +23,16 @@ class Triangle:
         cx = (self.a.x + self.b.x + self.c.x) / 3.0
         cy = (self.a.y + self.b.y + self.c.y) / 3.0
         return (cx, cy)
+    
+    @property
+    def area(self):
+        x1, y1 = self.a.x, self.a.y
+        x2, y2 = self.b.x, self.b.y
+        x3, y3 = self.c.x, self.c.y
+
+        return abs(((x2-x1) * (y3-y1) - (y2-y1)*(x3-x1))*0.5)
+
+
 
     def draw(self, screen, camera, color=(100, 100, 250), width=1):
             # We pass the list of 3 Point objects directly

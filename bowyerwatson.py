@@ -31,7 +31,7 @@ def Bowyer_watson(input_points):
 
         # Remove bad triangles
         for t in badTriangles:
-            triangulation.remove_triangle(t) # Assuming you have a remove method
+            triangulation.remove_triangle(t) 
 
         # Re-triangulate the hole
         for edge in polygon:
