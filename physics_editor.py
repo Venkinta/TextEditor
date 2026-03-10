@@ -13,6 +13,8 @@ class PhysicsEditor:
         self.selected_line = None
         self.boundary_types = ["Wall", "Velocity Inlet","Pressure Outlet"]
         self.current_line_idx = 0
+        self.inlet_velocity = 0
+        self.outlet_pressure = 0
         # REMOVE: imgui.create_context()
         # REMOVE: self.renderer = PygameRenderer()
         
@@ -71,7 +73,14 @@ class PhysicsEditor:
             imgui.begin(title)
             
             changed, self.current_line_idx = imgui.combo("Condition",self.current_line_idx,self.boundary_types)
+
+            if self.selected_line.boundary_type == "Velocity Inlet":
+                changed2,self.inlet_velocity = imgui.input_float("Inlet velocity", self.inlet_velocity,step = 0.1, step_fast = 1.0) 
             
+            if self.selected_line.boundary_type == "Pressure Outlet":
+                changed2,self.outlet_pressure = imgui.input_float("Outlet pressure", self.outlet_pressure,step = 0.1, step_fast = 1.0) 
+
+
             if changed:
                 
                 self.selected_line.boundary_type = self.boundary_types[self.current_line_idx]
