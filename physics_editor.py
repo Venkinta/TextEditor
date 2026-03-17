@@ -8,12 +8,12 @@ class PhysicsEditor:
         self.lines = lines
         self.renderer = renderer # Use the passed-in global renderer
         self.finished = False
-        self.density = 0.0
-        self.viscosity = 0.0
+        self.density = 1.2
+        self.viscosity = 0.0002
         self.selected_line = None
         self.boundary_types = ["Wall", "Velocity Inlet","Pressure Outlet"]
         self.current_line_idx = 0
-        self.inlet_velocity = 0
+        self.inlet_velocity = 1
         self.outlet_pressure = 0
         # REMOVE: imgui.create_context()
         # REMOVE: self.renderer = PygameRenderer()

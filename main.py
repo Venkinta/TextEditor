@@ -6,6 +6,7 @@ from snapengine import SnapEngine
 from pygame_widgets.button import Button
 import pygame_widgets
 from mesher import Mesher
+from solver import Solver
 from quad import Quad
 from camera import Camera
 from physics_editor import PhysicsEditor
@@ -94,9 +95,21 @@ def run_app():
                 if physicseditor.finished:
                     lines = physicseditor.lines
                     mesher = Mesher(screen, lines,physicseditor.n_layers,physicseditor.growth_factor,
-                                    physicseditor.thickness,physicseditor.boundary_spacing,physicseditor.r)
+                                    physicseditor.thickness,physicseditor.boundary_spacing,physicseditor.r,renderer)
                     mesher.mesh()
                     current_state = "MESHER"
+                    
+            if current_state == "MESHER":
+                mesher.renderer.process_event(event)
+                
+                if mesher.finished:
+                    solver = Solver(mesher.solver_data_pipeline(), [physicseditor.inlet_velocity,0.0],
+                                    physicseditor.outlet_pressure,physicseditor.density,physicseditor.viscosity)
+
+                    solver.Solve()
+                    current_state = "SOLVER"
+                
+                
 
 
         # --- Fixed Update 
@@ -113,6 +126,8 @@ def run_app():
         elif current_state == "PHYSICS":
             physicseditor.draw(screen,camera)
         elif current_state == "MESHER":
+            mesher.draw(screen,camera)
+        elif current_state == "SOLVER":
             mesher.draw(screen,camera)
         pygame.display.flip()
 

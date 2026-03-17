@@ -13,10 +13,12 @@ from shapely.geometry import Point as ShapelyPoint
 import cProfile
 import pstats
 
+import imgui
+from imgui.integrations.pygame import PygameRenderer
 
 
 class Mesher:
-    def __init__(self,screen,lines,n_layers,growth_factor,thickness,spacing,r):
+    def __init__(self,screen,lines,n_layers,growth_factor,thickness,spacing,r,RENDERER):
         self.lines = lines
         self.points = None
         self.boundary_points = None
@@ -35,8 +37,9 @@ class Mesher:
         #mesh generation
         self.r = r #20 is good
         
+        self.renderer = RENDERER
+        self.finished = False
         
-  
         
     def mesh(self):
         # 1. Get the lines in the correct loop order
@@ -326,6 +329,8 @@ class Mesher:
 
 
     def draw(self, screen,camera):
+        imgui.new_frame()
+        
         # --- Draw boundary lines ---
         if hasattr(self, "lines"):
             for line in self.lines:
@@ -339,6 +344,18 @@ class Mesher:
         # --- Draw triangulation ---
         if hasattr(self, "triangulation") and self.triangulation:
             self.triangulation.draw(screen,camera)
+            
+            
+        imgui.begin("Solver")
+        if imgui.button("Proceed to Solving"):
+            self.finish()
+        imgui.end()
+        
+      
+        imgui.render()
+        self.renderer.render(imgui.get_draw_data())
+            
+            
                     
     def create_boundary_layers(self, n_layers=1, scaling_factor=4):
         layers = [self.boundary_points]  # start with original
@@ -424,7 +441,7 @@ class Mesher:
                 # If the thickness was 0, p1==p4 and p2==p3, area will be 0.
                 area = 0.5 * abs((p1.x*p2.y + p2.x*p3.y + p3.x*p4.y + p4.x*p1.y) - (p2.x*p1.y + p3.x*p2.y + p4.x*p3.y + p1.x*p4.y))
                             
-                if area >1e-5:
+                if area >1e-3:
                     new_quad = Quad(p1, p2, p3, p4)
                     elements.append(new_quad)
                 
@@ -441,11 +458,13 @@ class Mesher:
         # 1. Create a Path object from the inner ring
         ring_path = Path(inner_ring_points)
         
-        # 2. Extract the centroids of all generated triangles
-        centroids = [t.centroid for t in self.triangulation.triangles]
+        # 2. Extract the centroids as a raw NumPy array of [x, y]
+        # This converts [Point(x,y), Point(x,y)...] -> [[x, y], [x, y]...]
+        centroids_coords = [[t.centroid.x, t.centroid.y] for t in self.triangulation.triangles]
+        centroids = np.array(centroids_coords, dtype=np.float64)
         
         # 3. Check which centroids are INSIDE the polygon ring
-        # radius=-1e-5 adds a tiny tolerance so triangles right on the edge aren't deleted
+        # Now Matplotlib receives a NumPy array and will be happy!
         mask = ring_path.contains_points(centroids, radius=-1e-5)
         
         # 4. Rebuild the triangle list keeping only the valid ones
@@ -475,15 +494,25 @@ class Mesher:
         # 2. Gather all cells
         Cells = self.boundary_elements + self.triangulation.triangles
         Nc = len(Cells)
-        cell_centers = np.array([cell.centroid for cell in Cells])
-        cell_areas = np.array([cell.area for cell in Cells])
         
+        # Extracting Centers: Ensure we get [x, y] for every cell
+        cell_centers = np.array([[c.centroid.x, c.centroid.y] for c in Cells], dtype=np.float64)
+
+        # Extracting Areas: Force everything to a float
+        cell_areas = np.array([float(c.area) for c in Cells], dtype=np.float64)
+                
         # 3. Build Edge Map
         edge_map = {} 
         for cell_id, cell in enumerate(Cells):
-            for edge in cell.edges(): # Assuming edge is (Point, Point)
-                # Create a unique key for the edge
-                key = tuple(sorted([(edge[0].x, edge[0].y), (edge[1].x, edge[1].y)]))
+            for edge in cell.edges(): 
+                # Safety check: ensure the frozenset actually has 2 points
+                if len(edge) != 2:
+                    print(f"Warning: Cell {cell_id} has a degenerate edge: {edge}")
+                    continue
+                    
+                p_a, p_b = edge 
+                key = tuple(sorted([(p_a.x, p_a.y), (p_b.x, p_b.y)]))
+                
                 if key not in edge_map:
                     edge_map[key] = []
                 edge_map[key].append(cell_id)
@@ -535,6 +564,7 @@ class Mesher:
             df[face_idx] = df_vec
             magDf[face_idx] = np.linalg.norm(df_vec)
 
+        print(cell_centers)
         return {
             'Nc': Nc, #number of cells
             'Nf': Nf, #number of faces
@@ -551,5 +581,6 @@ class Mesher:
         }
                 
         
-                
-        
+    def finish(self):
+        self.finished = True
+        pass

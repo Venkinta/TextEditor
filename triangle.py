@@ -1,4 +1,6 @@
 from camera import Camera
+from point import Point
+
 class Triangle:
     def __init__(self, a,b,c,neighbours=None):
         if neighbours is None:
@@ -18,11 +20,12 @@ class Triangle:
             frozenset((self.c, self.a)),
         ]
     
+    # In triangle.py (or wherever your Triangle class is)
     @property
     def centroid(self):
         cx = (self.a.x + self.b.x + self.c.x) / 3.0
         cy = (self.a.y + self.b.y + self.c.y) / 3.0
-        return (cx, cy)
+        return Point(cx, cy) # Change this from a tuple to a Point object
     
     @property
     def area(self):
