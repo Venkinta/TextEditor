@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
-
+import scipy.io
 
 class Solver:
     def __init__(self, mesher_data, inlet_velocity, outlet_pressure, rho, viscosity):
@@ -43,6 +43,12 @@ class Solver:
         self.df = mesh['df']
         self.magDf = mesh['magDf']
         
+        # --- CFD SAFETY CLAMP ---
+        # Prevent division by zero for any distance calculations
+        self.magDf = np.maximum(self.magDf, 1e-10)
+        self.magSf = np.maximum(self.magSf, 1e-10)
+        # ------------------------
+        
         # Cell geometry
         self.cell_centers = mesh['cell_centers']
         self.cell_areas = mesh['cell_areas']
@@ -55,8 +61,17 @@ class Solver:
         self.outlet_faces = np.where(self.boundary_tags == 2)[0]
         self.internal_faces = np.where(self.boundary_tags == -1)[0] #returns array of the indices where wall faces, inlet faces, outlet faces... are
         
+        
+        print(f"--- MESH SANITY CHECK ---")
+        print(f"Total Cells: {self.Nc}")
+        print(f"Internal Faces: {len(self.internal_faces)}")
+        print(f"Inlet Faces: {len(self.inlet_faces)}")
+        print(f"Outlet Faces: {len(self.outlet_faces)}")
+        print(f"Wall Faces: {len(self.wall_faces)}")
+        print(f"-------------------------")
+        
 
-    def Solve(self, max_iterations=1000, tolerance=1e-6):
+    def Solve(self, max_iterations=500, tolerance=1e-6):
         """
         SIMPLE algorithm main loop
         """
@@ -232,14 +247,50 @@ class Solver:
         # --- 4. UNDER-RELAXATION ---
         A_csr = A.tocsr()
         a_P = A_csr.diagonal().copy()
-        alpha_u = 0.7
+        alpha_u = 0.3
         
-        A_diag = A_csr.diagonal()
-        A_diag /= alpha_u
+        A_diag = a_P/alpha_u
         A_csr.setdiag(A_diag)
         
         if hasattr(self, 'U_old'):
-            b += (1 - alpha_u) / alpha_u * a_P * self.U[:, axis]
+            b += (1 - alpha_u) / alpha_u * a_P * self.U_old[:, axis]
+            
+            
+            
+            # --- DIAGNOSTIC CHECK ---
+        zero_diags = np.where(a_P == 0)[0]
+        if len(zero_diags) > 0:
+            print(f"CRITICAL WARNING: Found {len(zero_diags)} cells with a_P = 0.0 in Momentum!")
+            print(f"Cell IDs: {zero_diags[:10]}...") # Print first 10
+            
+            # Temporary hack to prevent nan division: give them a tiny fake value
+            a_P[zero_diags] = 1e-10 
+            
+            # We also need to fix the A matrix diagonal so spsolve doesn't crash
+            A_diag = A_csr.diagonal()
+            A_diag[zero_diags] = 1e-10
+            A_csr.setdiag(A_diag)
+            
+
+        
+        # === ADD THIS DEBUG CHECK ===
+        print(f"\n=== MOMENTUM MATRIX DEBUG (axis={axis}) ===")
+        print(f"Matrix shape: {A_csr.shape}")
+        print(f"Non-zeros: {A_csr.nnz}")
+        print(f"Diagonal min/max: {a_P.min():.6e} / {a_P.max():.6e}")
+        
+        # Find cells with zero diagonal (disconnected!)
+        zero_diag = np.where(a_P == 0)[0]
+        if len(zero_diag) > 0:
+            print(f"⚠️  WARNING: {len(zero_diag)} cells have ZERO diagonal!")
+            print(f"    First few: {zero_diag[:10]}")
+        
+        # Check if any rows are completely empty
+        row_sums = np.array(np.abs(A_csr).sum(axis=1)).flatten()
+        empty_rows = np.where(row_sums == 0)[0]
+        if len(empty_rows) > 0:
+            print(f"⚠️  CRITICAL: {len(empty_rows)} rows are COMPLETELY EMPTY!")
+            print(f"    Cells: {empty_rows[:10]}")
                                                         
         return A_csr, b, a_P
             
@@ -260,12 +311,12 @@ class Solver:
         own_int = self.owner[f_int]
         nei_int = self.neighbor[f_int]
         
-        d_f_int = self.rho * ( (self.Sf[f_int,0]**2)/a_P_u[own_int] + (self.Sf[f_int,1]**2)/a_P_v[own_int] )
+        d_f_int =  ( (self.Sf[f_int,0]**2)/a_P_u[own_int] + (self.Sf[f_int,1]**2)/a_P_v[own_int] )
         
         for i, f in enumerate(f_int):
             A[own_int[i], own_int[i]] += d_f_int[i]
             A[own_int[i], nei_int[i]] -= d_f_int[i]
-            A[nei_int[i], nei_i[i]]   += d_f_int[i]
+            A[nei_int[i], nei_int[i]] += d_f_int[i]
             A[nei_int[i], own_int[i]] -= d_f_int[i]
             
         # Mass imbalance (Internal)
@@ -278,7 +329,7 @@ class Solver:
         f_in = self.inlet_faces
         if len(f_in) > 0:
             own_in = self.owner[f_in]
-            d_f_in = self.rho * ( (self.Sf[f_in,0]**2)/a_P_u[own_in] + (self.Sf[f_in,1]**2)/a_P_v[own_in] )
+            d_f_in =  ( (self.Sf[f_in,0]**2)/a_P_u[own_in] + (self.Sf[f_in,1]**2)/a_P_v[own_in] )
             for i, f in enumerate(f_in):
                 A[own_in[i], own_in[i]] += d_f_in[i]
             
@@ -293,7 +344,7 @@ class Solver:
             Sf_x_out = self.Sf[f_out, 0]
             Sf_y_out = self.Sf[f_out, 1]
             
-            d_f_out = self.rho * ( (Sf_x_out**2)/a_P_u[own_out] + (Sf_y_out**2)/a_P_v[own_out] )
+            d_f_out =  ( (Sf_x_out**2)/a_P_u[own_out] + (Sf_y_out**2)/a_P_v[own_out] )
             
             for i, f in enumerate(f_out):
                 A[own_out[i], own_out[i]] += d_f_out[i]
@@ -305,9 +356,28 @@ class Solver:
         f_w = self.wall_faces
         if len(f_w) > 0:
             own_w = self.owner[f_w]
-            d_f_w = self.rho * ( (self.Sf[f_w,0]**2)/a_P_u[own_w] + (self.Sf[f_w,1]**2)/a_P_v[own_w] )
+            d_f_w =  ( (self.Sf[f_w,0]**2)/a_P_u[own_w] + (self.Sf[f_w,1]**2)/a_P_v[own_w] )
             for i, f in enumerate(f_w):
                 A[own_w[i], own_w[i]] += d_f_w[i]
+                
+                
+        A_csr = A.tocsr()        
+        print(f"\n=== PRESSURE MATRIX DEBUG ===")
+        print(f"Matrix shape: {A_csr.shape}")
+        print(f"Non-zeros: {A_csr.nnz}")
+        
+        diag = A_csr.diagonal()
+        print(f"Diagonal min/max: {diag.min():.6e} / {diag.max():.6e}")
+        
+        zero_diag = np.where(diag == 0)[0]
+        if len(zero_diag) > 0:
+            print(f"⚠️  {len(zero_diag)} cells have ZERO diagonal in pressure matrix!")
+        
+        # Check outlet contribution
+        own_outlet = self.owner[self.outlet_faces]
+        print(f"Outlet cells: {own_outlet}")
+        print(f"Outlet diagonals: {diag[own_outlet]}")  
+                
 
         return A.tocsr(), b
     
@@ -323,7 +393,7 @@ class Solver:
         Apply pressure and velocity corrections (Fully Vectorized)
         """
         # Under-relaxation factors
-        alpha_p = 0.3  # Pressure (conservative)
+        alpha_p = 0.1  # Pressure (conservative)
         
         # --- 1. UPDATE PRESSURE ---
         self.P += alpha_p * p_prime

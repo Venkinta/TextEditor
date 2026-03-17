@@ -9,6 +9,7 @@ import constructor as ct
 from quad import Quad
 from shapely.geometry import Polygon as ShapelyPoly
 from shapely.geometry import Point as ShapelyPoint
+from triangle import Triangle
 
 import cProfile
 import pstats
@@ -101,7 +102,7 @@ class Mesher:
         all_bc_tags = []  # <--- NEW: To store our 0, 1, 2 tags
         
         # Mapping strings to the integers our solver expects
-        bc_map = {"Wall": 0, "Inlet": 1, "Outlet": 2}
+        bc_map = {"Wall": 0, "Velocity Inlet": 1, "Pressure Outlet": 2, "Inlet":1,"Outlet":2}
         
         num_l = len(ordered_lines)
 
@@ -413,38 +414,54 @@ class Mesher:
     def connect_layers(self, layers):
         """
         Connects concentric rings of points into Quad elements.
-        layers: list of lists (or arrays) of points.
+        Gracefully converts 'pinched' quads at boundary transitions into Triangles.
         """
+        import math
         elements = []
         
         # Iterate through each gap between layers
         for i in range(len(layers) - 1):
             current_layer = layers[i]
             next_layer = layers[i + 1]
-            
-            # We assume layers have matching point counts
             num_points = len(current_layer)
             
             for j in range(num_points):
-                # Get indices, wrapping around for the last segment
                 j_next = (j + 1) % num_points
                 
-                # Get the 4 corners of the quad
-                # Note: Convert to Point object if they are currently numpy arrays
                 p1 = self._to_point(current_layer[j])
                 p2 = self._to_point(current_layer[j_next])
                 p3 = self._to_point(next_layer[j_next])
                 p4 = self._to_point(next_layer[j])
                 
-                # Create a Quad
-                # Simple area check for a quad (sum of two triangles)
-                # If the thickness was 0, p1==p4 and p2==p3, area will be 0.
-                area = 0.5 * abs((p1.x*p2.y + p2.x*p3.y + p3.x*p4.y + p4.x*p1.y) - (p2.x*p1.y + p3.x*p2.y + p4.x*p3.y + p1.x*p4.y))
-                            
-                if area >1e-3:
-                    new_quad = Quad(p1, p2, p3, p4)
-                    elements.append(new_quad)
+                # Area check for a quad (Shoelace)
+                area = 0.5 * abs((p1.x*p2.y + p2.x*p3.y + p3.x*p4.y + p4.x*p1.y) - 
+                                (p2.x*p1.y + p3.x*p2.y + p4.x*p3.y + p1.x*p4.y))
+                                
+                # If the cell has virtually zero area entirely, skip it
+                if area < 1e-4:
+                    continue
                 
+                # Measure the length of all 4 edges
+                tol = 1e-4
+                d12 = math.hypot(p1.x - p2.x, p1.y - p2.y)
+                d23 = math.hypot(p2.x - p3.x, p2.y - p3.y)
+                d34 = math.hypot(p3.x - p4.x, p3.y - p4.y)
+                d41 = math.hypot(p4.x - p1.x, p4.y - p1.y)
+                
+                # --- POLYGON CONVERSION LOGIC ---
+                # If an edge is pinched (length near 0), spawn a Triangle instead!
+                if d12 < tol:
+                    elements.append(Triangle(p2, p3, p4))
+                elif d23 < tol:
+                    elements.append(Triangle(p1, p3, p4))
+                elif d34 < tol:
+                    elements.append(Triangle(p1, p2, p3))
+                elif d41 < tol:
+                    elements.append(Triangle(p1, p2, p3))
+                else:
+                    # All edges have length, spawn a healthy Quad
+                    elements.append(Quad(p1, p2, p3, p4))
+                    
         return elements
 
   
@@ -480,19 +497,41 @@ class Mesher:
     def solver_data_pipeline(self):
         print('Beginning data collection for Solver...')
 
+        # --- NEW HELPER FUNCTION ---
+        def get_edge_key(p_a, p_b):
+            # Handles both objects (like Shapely points with .x) and arrays/lists
+            ax = p_a.x if hasattr(p_a, 'x') else p_a[0]
+            ay = p_a.y if hasattr(p_a, 'y') else p_a[1]
+            bx = p_b.x if hasattr(p_b, 'x') else p_b[0]
+            by = p_b.y if hasattr(p_b, 'y') else p_b[1]
+            
+            # Round to 6 decimals to eliminate float jitter
+            k1 = (round(float(ax), 6), round(float(ay), 6))
+            k2 = (round(float(bx), 6), round(float(by), 6))
+            return tuple(sorted([k1, k2]))
+        # ---------------------------
         # 1. Pre-calculate a lookup for boundary points -> BC Type
         # Key: (p1_coords, p2_coords), Value: BC_Type (0, 1, 2)
         # We use sorted tuples so the order of points in the edge doesn't matter
+        # 1. Pre-calculate a lookup for boundary points
         bc_lookup = {}
         for i in range(len(self.boundary_points)):
             p1 = self.boundary_points[i]
             p2 = self.boundary_points[(i + 1) % len(self.boundary_points)]
             
-            edge_key = tuple(sorted([(p1[0], p1[1]), (p2[0], p2[1])]))
+            # Use the helper!
+            edge_key = get_edge_key(p1, p2)
             bc_lookup[edge_key] = self.point_bc_mask[i]
 
-        # 2. Gather all cells
-        Cells = self.boundary_elements + self.triangulation.triangles
+        # --- 2. Gather all cells ---
+        # Filter out boundary layer quads that have collapsed to zero/near-zero area
+        valid_boundary_elements = [
+            c for c in self.boundary_elements 
+            if float(c.area) > 1e-8
+        ]
+
+        # Combine the healthy quads with the interior triangles
+        Cells = valid_boundary_elements + self.triangulation.triangles
         Nc = len(Cells)
         
         # Extracting Centers: Ensure we get [x, y] for every cell
@@ -502,16 +541,16 @@ class Mesher:
         cell_areas = np.array([float(c.area) for c in Cells], dtype=np.float64)
                 
         # 3. Build Edge Map
+        # 3. Build Edge Map
         edge_map = {} 
         for cell_id, cell in enumerate(Cells):
             for edge in cell.edges(): 
-                # Safety check: ensure the frozenset actually has 2 points
                 if len(edge) != 2:
-                    print(f"Warning: Cell {cell_id} has a degenerate edge: {edge}")
                     continue
                     
                 p_a, p_b = edge 
-                key = tuple(sorted([(p_a.x, p_a.y), (p_b.x, p_b.y)]))
+                # Use the helper!
+                key = get_edge_key(p_a, p_b)
                 
                 if key not in edge_map:
                     edge_map[key] = []
@@ -527,16 +566,47 @@ class Mesher:
         magDf = np.zeros(Nf)
         boundary_tags = np.full(Nf, -1) # -1: Internal, 0: Wall, 1: Inlet, 2: Outlet
 
+        # --- DEBUG START ---
+        print(f"DEBUG: bc_lookup contains {len(bc_lookup)} total boundary edges.")
+        unique_tags_in_lookup = set(bc_lookup.values())
+        print(f"DEBUG: Unique tags found in lookup: {unique_tags_in_lookup}")
+        
+        # Let's count how many edges in edge_map only have 1 cell (meaning they are boundaries)
+        boundary_edge_count = sum(1 for ids in edge_map.values() if len(ids) == 1)
+        print(f"DEBUG: edge_map has {boundary_edge_count} boundary candidates.")
+        # --- DEBUG END ---
+
         for face_idx, (edge_key, cell_ids) in enumerate(edge_map.items()):
-            # A. Connectivity
             owner[face_idx] = cell_ids[0]
+            
             if len(cell_ids) > 1:
                 neighbor[face_idx] = cell_ids[1]
                 boundary_tags[face_idx] = -1 # Internal
             else:
-                # B. Boundary Tagging - Look it up in our BC Map!
-                # If it's not in bc_lookup, it might be an internal hole (default to Wall)
-                boundary_tags[face_idx] = bc_lookup.get(edge_key, 0)
+                # B. Boundary Tagging - Robust Search
+                p1_raw, p2_raw = edge_key
+                face_mid = (np.array(p1_raw) + np.array(p2_raw)) / 2.0
+                
+                assigned_tag = 0 # Default to Wall
+                min_dist = float('inf')
+                
+                # Check against original boundary segments
+                for i in range(len(self.boundary_points)):
+                    b1 = self.boundary_points[i]
+                    b2 = self.boundary_points[(i + 1) % len(self.boundary_points)]
+                    b_mid = (b1 + b2) / 2.0
+                    
+                    dist = np.linalg.norm(face_mid - b_mid)
+                    if dist < min_dist:
+                        min_dist = dist
+                        assigned_tag = self.point_bc_mask[i]
+                
+                # If the face is reasonably close to a boundary segment, tag it.
+                # If it's far away (like an internal hole), it stays a Wall (0).
+                if min_dist < 1.0: # 1.0 is a safe tolerance for most mesh sizes
+                    boundary_tags[face_idx] = assigned_tag
+                else:
+                    boundary_tags[face_idx] = 0
 
             # C. Geometry (Vector math)
             p1_coords, p2_coords = edge_key
@@ -565,6 +635,13 @@ class Mesher:
             magDf[face_idx] = np.linalg.norm(df_vec)
 
         print(cell_centers)
+        cells_in_faces = set(owner) | set(neighbor[neighbor != -1])
+        all_cells = set(range(Nc))
+        orphan_cells = all_cells - cells_in_faces
+
+        if orphan_cells:
+            print(f"⚠️  MESHER BUG: {len(orphan_cells)} cells have NO faces!")
+            print(f"    These cells will cause singular matrix!")
         return {
             'Nc': Nc, #number of cells
             'Nf': Nf, #number of faces

@@ -9,7 +9,7 @@ class PhysicsEditor:
         self.renderer = renderer # Use the passed-in global renderer
         self.finished = False
         self.density = 1.2
-        self.viscosity = 0.0002
+        self.viscosity = 0.002
         self.selected_line = None
         self.boundary_types = ["Wall", "Velocity Inlet","Pressure Outlet"]
         self.current_line_idx = 0
