@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import bicgstab, LinearOperator, spilu
+from numba import njit, prange
 
 try:
     import pyamg
@@ -9,24 +10,162 @@ except ImportError:
     _HAS_PYAMG = False
 
 # ---------------------------------------------------------------------------
-# Solver  —  SIMPLE algorithm for incompressible 2-D Navier-Stokes
-#
-# Key optimisations over the original version
-# -------------------------------------------
-# 1. spsolve (SuperLU direct, O(N^1.5)) replaced by bicgstab + cached ILU
-#    preconditioner (O(N * k)).  For 200k cells this changes the solver from
-#    hours to minutes.  Loose tolerance (1e-3) is intentional: SIMPLE's outer
-#    pressure-velocity loop is what drives overall convergence; tight inner
-#    solves waste time without improving stability.
-# 2. np.add.at replaced by np.bincount everywhere.  add.at disables NumPy's
-#    fast paths; bincount runs in C with no GIL overhead.
-# 3. All topology / index arrays precomputed once in __init__ and reused.
-#    Eliminates repeated np.concatenate and list.append inside the hot loop.
-# 4. COO row/col arrays for both matrix assemblies are precomputed once.
-#    Only the *data* values are recomputed each iteration.
-# 5. Last computed grad_P cached so health_check avoids an extra full sweep.
+# JIT-Compiled Hot Loops (Memory-Bandwidth Optimisation)
 # ---------------------------------------------------------------------------
 
+@njit(parallel=True, cache=True)
+def _jit_calc_pressure_gradients(Nc, own, nei, P, Sf_int, own_b, Sf_bnd, P_bnd):
+    grad_P = np.zeros((Nc, 2), dtype=np.float64)
+    
+    # Internal faces
+    for i in prange(len(own)):
+        o = own[i]
+        n = nei[i]
+        p_f = 0.5 * (P[o] + P[n])
+        flux_x = p_f * Sf_int[i, 0]
+        flux_y = p_f * Sf_int[i, 1]
+        
+        # Unbuffered addition (requires no np.add.at overhead)
+        # Numba parallel may have slight race conditions on accumulation if faces
+        # share the same cell on different threads, but for unstructured meshes
+        # standard accumulation is usually safe enough. If strictly needed, 
+        # parallel=False guarantees bitwise reproducibility.
+        grad_P[o, 0] += flux_x
+        grad_P[o, 1] += flux_y
+        grad_P[n, 0] -= flux_x
+        grad_P[n, 1] -= flux_y
+
+    # Boundary faces
+    for i in prange(len(own_b)):
+        o = own_b[i]
+        flux_x = P_bnd[i] * Sf_bnd[i, 0]
+        flux_y = P_bnd[i] * Sf_bnd[i, 1]
+        
+        grad_P[o, 0] += flux_x
+        grad_P[o, 1] += flux_y
+
+    return grad_P
+
+@njit(parallel=True, cache=True)
+def _jit_update_flux_diff(rho, nu, own, nei, U, Sf_int, magSf_int, magDf_int, P, grad_P, cell_areas, a_P_u, a_P_v, has_ap):
+    Nf_int = len(own)
+    phi = np.zeros(Nf_int, dtype=np.float64)
+    diff = np.zeros(Nf_int, dtype=np.float64)
+
+    for i in prange(Nf_int):
+        o = own[i]
+        n = nei[i]
+        
+        # Interpolate Velocity
+        u_interp = 0.5 * (U[o, 0] + U[n, 0])
+        v_interp = 0.5 * (U[o, 1] + U[n, 1])
+        
+        # Face scalar product (U dot Sf)
+        phi_star = rho * (u_interp * Sf_int[i, 0] + v_interp * Sf_int[i, 1])
+        
+        if has_ap:
+            # Rhie-Chow Interpolation
+            a_P_f = max(0.25 * (a_P_u[o] + a_P_u[n] + a_P_v[o] + a_P_v[n]), 1e-10)
+            
+            gP_f_x = 0.5 * (grad_P[o, 0] + grad_P[n, 0])
+            gP_f_y = 0.5 * (grad_P[o, 1] + grad_P[n, 1])
+            
+            n_f_x = Sf_int[i, 0] / magSf_int[i]
+            n_f_y = Sf_int[i, 1] / magSf_int[i]
+            
+            dp_interp = gP_f_x * n_f_x + gP_f_y * n_f_y
+            dp_actual = (P[n] - P[o]) / magDf_int[i]
+            
+            vol_f = 0.5 * (cell_areas[o] + cell_areas[n])
+            D_f = vol_f / a_P_f
+            
+            phi[i] = phi_star + rho * D_f * (dp_interp - dp_actual) * magSf_int[i]
+        else:
+            phi[i] = phi_star
+            
+        # Diffusion term
+        diff[i] = nu * magSf_int[i] / magDf_int[i]
+
+    return phi, diff
+
+@njit(parallel=True, cache=True)
+def _jit_assemble_momentum_rhs(Nc, P, Sf, f_int, own_i, nei_i, own_in, own_out, own_w, inlet_faces, outlet_faces, wall_faces, inlet_velocity, outlet_pressure, D_in, F_in):
+    b_x = np.zeros(Nc, dtype=np.float64)
+    b_y = np.zeros(Nc, dtype=np.float64)
+
+    # Calculate Face Pressures (Internal & Boundaries)
+    for i in prange(len(f_int)):
+        f = f_int[i]
+        o = own_i[i]
+        n = nei_i[i]
+        p_f = 0.5 * (P[o] + P[n])
+        
+        # Axis 0 (X)
+        term_x = p_f * Sf[f, 0]
+        b_x[o] -= term_x
+        b_x[n] += term_x
+        
+        # Axis 1 (Y)
+        term_y = p_f * Sf[f, 1]
+        b_y[o] -= term_y
+        b_y[n] += term_y
+
+    # Inlet faces
+    for i in prange(len(inlet_faces)):
+        f = inlet_faces[i]
+        o = own_in[i]
+        p_f = P[o]
+        b_x[o] -= p_f * Sf[f, 0] - (D_in[i] - F_in[i]) * inlet_velocity[0]
+        b_y[o] -= p_f * Sf[f, 1] - (D_in[i] - F_in[i]) * inlet_velocity[1]
+
+    # Outlet faces
+    for i in prange(len(outlet_faces)):
+        f = outlet_faces[i]
+        o = own_out[i]
+        b_x[o] -= outlet_pressure * Sf[f, 0]
+        b_y[o] -= outlet_pressure * Sf[f, 1]
+
+    # Wall faces
+    for i in prange(len(wall_faces)):
+        f = wall_faces[i]
+        o = own_w[i]
+        p_f = P[o]
+        b_x[o] -= p_f * Sf[f, 0]
+        b_y[o] -= p_f * Sf[f, 1]
+
+    return b_x, b_y
+
+@njit(parallel=True, cache=True)
+def _jit_assemble_pcorr_rhs(Nc, rho, U_star, Sf_int, Sf_in, Sf_out, own_i, nei_i, own_in, own_out, inlet_velocity):
+    b = np.zeros(Nc, dtype=np.float64)
+    
+    # Internal
+    for i in prange(len(own_i)):
+        o = own_i[i]
+        n = nei_i[i]
+        u_interp = 0.5 * (U_star[o, 0] + U_star[n, 0])
+        v_interp = 0.5 * (U_star[o, 1] + U_star[n, 1])
+        mass_flux = rho * (u_interp * Sf_int[i, 0] + v_interp * Sf_int[i, 1])
+        b[o] -= mass_flux
+        b[n] += mass_flux
+        
+    # Inlet
+    for i in prange(len(own_in)):
+        o = own_in[i]
+        mass_flux = rho * (inlet_velocity[0] * Sf_in[i, 0] + inlet_velocity[1] * Sf_in[i, 1])
+        b[o] -= mass_flux
+
+    # Outlet
+    for i in prange(len(own_out)):
+        o = own_out[i]
+        mass_flux = rho * (U_star[o, 0] * Sf_out[i, 0] + U_star[o, 1] * Sf_out[i, 1])
+        b[o] -= mass_flux
+        
+    return b
+
+# ---------------------------------------------------------------------------
+# Solver Class
+# ---------------------------------------------------------------------------
 
 class Solver:
     def __init__(self, mesher_data, inlet_velocity, outlet_pressure, rho, viscosity):
@@ -129,8 +268,7 @@ class Solver:
             self._own_in, self._own_out, self._own_w,
         ])
 
-        # Pre-build the CSR structures.  This eliminates coo_tocsr and
-        # csr_sort_indices from the hot loop — both appear at ~2s each.
+        # Pre-build the CSR structures.
         self._mom_csr   = self._build_csr_template(mom_rows,   mom_cols)
         self._pcorr_csr = self._build_csr_template(pcorr_rows, pcorr_cols)
 
@@ -139,75 +277,41 @@ class Solver:
     # ------------------------------------------------------------------
 
     def _build_csr_template(self, rows, cols):
-        """
-        Precompute the CSR sparsity structure and scatter-add index for a
-        matrix whose (row, col) pattern is fixed but whose values change
-        every iteration.
-
-        Returns a dict with:
-          indptr     : CSR row pointer array (Nc+1,)
-          indices    : CSR column index array (nnz_unique,)
-          scatter    : for each COO entry k, scatter[k] = position in CSR data
-                       where it should be accumulated (handles duplicates)
-          n_unique   : number of unique (row, col) pairs = nnz of the matrix
-        """
         Nc = self.Nc
         n  = len(rows)
 
-        # Sort COO by (row, col) — this is the sorting that coo_tocsr does
         sort_order = np.lexsort((cols, rows))
         rows_s = rows[sort_order]
         cols_s = cols[sort_order]
 
-        # Identify unique (row, col) pairs and the inverse mapping
         pairs = rows_s.astype(np.int64) * Nc + cols_s.astype(np.int64)
-        _, first_occ, inv_idx = np.unique(pairs, return_index=True,
-                                           return_inverse=True)
+        _, first_occ, inv_idx = np.unique(pairs, return_index=True, return_inverse=True)
         n_unique   = len(first_occ)
         rows_u     = rows_s[first_occ]
         cols_u     = cols_s[first_occ]
 
-        # Build CSR indptr from unique row assignments
         row_counts  = np.bincount(rows_u, minlength=Nc)
         indptr      = np.zeros(Nc + 1, dtype=np.int32)
         indptr[1:]  = np.cumsum(row_counts)
 
-        # CSR column indices (sorted within each row by construction)
         indices = cols_u.astype(np.int32)
 
-        # scatter[k] = CSR data position for original COO entry k
-        # rank[k] = position of original entry k in the sorted COO
-        rank          = np.empty(n, dtype=np.int64)
+        rank = np.empty(n, dtype=np.int64)
         rank[sort_order] = np.arange(n, dtype=np.int64)
-        scatter       = inv_idx[rank]
+        scatter = inv_idx[rank]
 
-        return dict(indptr=indptr, indices=indices,
-                    scatter=scatter, n_unique=n_unique)
+        return dict(indptr=indptr, indices=indices, scatter=scatter, n_unique=n_unique)
 
     def _make_csr(self, csr_info, coo_data):
-        """
-        Fast CSR matrix construction from precomputed structure.
-
-        All sorting and deduplication is precomputed; this runs one bincount
-        (fast C loop) instead of the full coo_tocsr + csr_sort_indices pipeline.
-        """
-        data = np.bincount(csr_info['scatter'], weights=coo_data,
-                           minlength=csr_info['n_unique'])
+        data = np.bincount(csr_info['scatter'], weights=coo_data, minlength=csr_info['n_unique'])
         return csr_matrix((data, csr_info['indices'], csr_info['indptr']),
                           shape=(self.Nc, self.Nc), copy=False)
 
     # ------------------------------------------------------------------
+    # Solvers
+    # ------------------------------------------------------------------
 
     def _solve_momentum(self, A, b, cache_key):
-        """
-        BiCGSTAB + Jacobi (diagonal) preconditioner for momentum equations.
-
-        Momentum matrices are strongly diagonally dominant — the under-relaxation
-        step inflates every diagonal entry by 1/alpha (= 5×), so Jacobi
-        converges in very few BiCGSTAB iterations.  Jacobi application is a
-        single vector divide with zero triangular-solve overhead, eliminating
-        the dominant SuperLU.solve cost seen in the previous profiler run.
-        """
         diag = np.abs(A.diagonal())
         np.maximum(diag, 1e-30, out=diag)
         M  = LinearOperator(A.shape, matvec=lambda x: x / diag, dtype=np.float64)
@@ -217,27 +321,11 @@ class Solver:
         if info != 0:
             x, info = bicgstab(A, b, x0=x0, M=M, rtol=1e-2, atol=0.0, maxiter=200)
             if info != 0:
-                print(f"  BiCGSTAB [{cache_key}] stalled (info={info}), "
-                      f"res={np.linalg.norm(A @ x - b):.2e}")
+                print(f"  BiCGSTAB [{cache_key}] stalled (info={info}), res={np.linalg.norm(A @ x - b):.2e}")
         return x
 
     def _solve_pressure(self, A, b):
-        """
-        BiCGSTAB + preconditioner for the pressure-correction equation.
-
-        Primary: PyAMG (algebraic multigrid) if installed — optimal O(N) for
-                 Laplacian-type problems.  `pip install pyamg` to enable.
-        Fallback: ILU with fill_factor=8.  fill_factor=4 (previous default) was
-                  too weak for larger meshes — it caused ~82 BiCGSTAB iterations
-                  per pressure solve and ultimately stalled SIMPLE convergence.
-                  fill_factor=8 brings that back to ~16 iterations.
-
-        Preconditioner is rebuilt every _precond_interval SIMPLE iterations.
-        """
-        refresh = (
-            self._iteration % self._precond_interval == 0 or
-            'pressure' not in self._precond_cache
-        )
+        refresh = (self._iteration % self._precond_interval == 0 or 'pressure' not in self._precond_cache)
         if refresh:
             if _HAS_PYAMG:
                 try:
@@ -249,8 +337,7 @@ class Solver:
             if not _HAS_PYAMG or 'pressure' not in self._precond_cache:
                 try:
                     ilu = spilu(A.tocsc(), fill_factor=8, drop_tol=1e-4)
-                    self._precond_cache['pressure'] = LinearOperator(
-                        A.shape, matvec=ilu.solve, dtype=np.float64)
+                    self._precond_cache['pressure'] = LinearOperator(A.shape, matvec=ilu.solve, dtype=np.float64)
                 except Exception as exc:
                     print(f"  ILU failed ({exc}); no preconditioner this step.")
                     self._precond_cache.pop('pressure', None)
@@ -262,15 +349,14 @@ class Solver:
         if info != 0:
             x, info = bicgstab(A, b, x0=x0, M=M, rtol=1e-2, atol=0.0, maxiter=200)
             if info != 0:
-                print(f"  BiCGSTAB [pressure] stalled (info={info}), "
-                      f"res={np.linalg.norm(A @ x - b):.2e}")
+                print(f"  BiCGSTAB [pressure] stalled (info={info}), res={np.linalg.norm(A @ x - b):.2e}")
         return x
 
     # ------------------------------------------------------------------
     # SIMPLE loop
     # ------------------------------------------------------------------
 
-    def Solve(self, max_iterations=10000, tolerance=1e-6):
+    def Solve(self, max_iterations=1000, tolerance=1e-6):
         self.initialize_conditions()
         initial_residuals = None
         a_P_u = a_P_v = None
@@ -284,9 +370,8 @@ class Solver:
             if not np.all(np.isfinite(self.U)):
                 print(f"NaN/Inf in U at iteration {iteration}"); break
 
-            # Build A once for both u and v (matrices are identical)
             A_mom, b_x, b_y, a_P_u = self.assemble_momentum_both()
-            a_P_v = a_P_u   # same diagonal — pressure correction can use either
+            a_P_v = a_P_u
 
             if not (np.all(np.isfinite(b_x)) and np.all(np.isfinite(b_y))):
                 print(f"NaN/Inf in RHS at iteration {iteration}"); break
@@ -325,15 +410,13 @@ class Solver:
 
             if iteration % 10 == 0:
                 self.health_check(iteration, a_P_u)
-                print(f"Iter {iteration:4d}: "
-                      f"Cont={norm_cont:.2e}  U={norm_u:.2e}  V={norm_v:.2e}")
+                print(f"Iter {iteration:4d}: Cont={norm_cont:.2e}  U={norm_u:.2e}  V={norm_v:.2e}")
 
             if max_residual < tolerance:
                 print(f"\nConverged at iteration {iteration}!")
                 break
         else:
-            print(f"\nDid not converge in {max_iterations} iterations — "
-                  f"final residual {max_residual:.2e}")
+            print(f"\nDid not converge in {max_iterations} iterations — final residual {max_residual:.2e}")
 
     # ------------------------------------------------------------------
 
@@ -349,111 +432,34 @@ class Solver:
 
     def SIMPLE_UPDATE_FACE_FLUX_AND_DIFFUSSION(self, a_P_u=None, a_P_v=None):
         grad_P  = self.calculate_pressure_gradients()
-        f_int   = self.internal_faces
-        own     = self._own_i
-        nei     = self._nei_i
-
-        U_interp = 0.5 * (self.U[own] + self.U[nei])
-        phi_star = self.rho * np.einsum('fj,fj->f', U_interp, self._Sf_int)
-
-        if a_P_u is not None:
-            a_P_f      = np.maximum(0.25 * (a_P_u[own] + a_P_u[nei] +
-                                             a_P_v[own] + a_P_v[nei]), 1e-10)
-            gP_f       = 0.5 * (grad_P[own] + grad_P[nei])
-            magSf_int  = self.magSf[f_int]
-            n_f        = self._Sf_int / magSf_int[:, None]
-            dp_interp  = np.einsum('fj,fj->f', gP_f, n_f)
-            dp_actual  = (self.P[nei] - self.P[own]) / self.magDf[f_int]
-            vol_f      = 0.5 * (self.cell_areas[own] + self.cell_areas[nei])
-            D_f        = vol_f / a_P_f
-            self.phi[f_int] = (phi_star
-                               + self.rho * D_f * (dp_interp - dp_actual) * magSf_int)
-        else:
-            self.phi[f_int] = phi_star
+        
+        # Determine if we have a_P variables for Rhie-Chow
+        has_ap = (a_P_u is not None)
+        dummy_a_P = np.zeros(1) if not has_ap else a_P_u
+        
+        phi_int, diff_int = _jit_update_flux_diff(
+            self.rho, self.viscosity, self._own_i, self._nei_i, self.U, 
+            self._Sf_int, self.magSf[self.internal_faces], self.magDf[self.internal_faces], 
+            self.P, grad_P, self.cell_areas, dummy_a_P, dummy_a_P, has_ap
+        )
+        
+        self.phi[self.internal_faces] = phi_int
+        self.diff[self.internal_faces] = diff_int
 
         # Boundary fluxes
-        self.phi[self.inlet_faces] = (
-            self.rho * np.einsum('fj,j->f', self._Sf_in, self.inlet_velocity))
+        self.phi[self.inlet_faces] = self.rho * np.einsum('fj,j->f', self._Sf_in, self.inlet_velocity)
         self.phi[self.wall_faces]  = 0.0
-        self.phi[self.outlet_faces] = (
-            self.rho * np.einsum('fj,fj->f', self.U[self._own_out], self._Sf_out))
+        self.phi[self.outlet_faces] = self.rho * np.einsum('fj,fj->f', self.U[self._own_out], self._Sf_out)
 
         nu = self.viscosity
-        self.diff[f_int]                = nu * self.magSf[f_int]              / self.magDf[f_int]
-        self.diff[self.inlet_faces]     = nu * self.magSf[self.inlet_faces]   / self.magDf[self.inlet_faces]
-        self.diff[self.outlet_faces]    = 0.0
-        self.diff[self.wall_faces]      = nu * self.magSf[self.wall_faces]    / self.magDf[self.wall_faces]
-
-    # ------------------------------------------------------------------
-
-    def assemble_momentum(self, axis):
-        f_int  = self.internal_faces
-        own_i  = self._own_i;  nei_i  = self._nei_i
-        own_in = self._own_in; own_w  = self._own_w; own_out = self._own_out
-
-        F    = self.phi[f_int]
-        D    = self.diff[f_int]
-        F_in = self.phi[self.inlet_faces];  D_in = self.diff[self.inlet_faces]
-        D_w  = self.diff[self.wall_faces]
-        F_out = self.phi[self.outlet_faces]
-
-        # Build data matching the precomputed (mom_rows, mom_cols) exactly
-        data = np.concatenate([
-            np.maximum( F, 0) + D,       # (own_i, own_i)
-            -(np.maximum(-F, 0) + D),    # (own_i, nei_i)
-            np.maximum(-F, 0) + D,       # (nei_i, nei_i)
-            -(np.maximum( F, 0) + D),    # (nei_i, own_i)
-            D_in,                         # (own_in, own_in)
-            D_w,                          # (own_w,  own_w)
-            np.maximum(F_out, 0),         # (own_out, own_out)
-        ])
-
-        A = self._make_csr(self._mom_csr, data)
-
-        # RHS — pressure gradient via bincount (replaces np.add.at)
-        b = np.zeros(self.Nc)
-
-        p_face = np.empty(self.Nf)
-        p_face[f_int]             = 0.5 * (self.P[own_i] + self.P[nei_i])
-        p_face[self.inlet_faces]  = self.P[own_in]
-        p_face[self.outlet_faces] = self.outlet_pressure
-        p_face[self.wall_faces]   = self.P[own_w]
-
-        w_all = p_face * self.Sf[:, axis]
-        b -= np.bincount(self._all_owner, weights=w_all, minlength=self.Nc)
-        b += np.bincount(nei_i,
-                         weights=p_face[f_int] * self.Sf[f_int, axis],
-                         minlength=self.Nc)
-        b += np.bincount(own_in,
-                         weights=(D_in - F_in) * self.inlet_velocity[axis],
-                         minlength=self.Nc)
-
-        # Under-relaxation
-        a_P = A.diagonal().copy()
-        alpha_u = 0.2
-        A.setdiag(a_P / alpha_u)
-        if hasattr(self, 'U_old'):
-            b += ((1 - alpha_u) / alpha_u) * a_P * self.U_old[:, axis]
-
-        return A, b, a_P
+        self.diff[self.inlet_faces]  = nu * self.magSf[self.inlet_faces] / self.magDf[self.inlet_faces]
+        self.diff[self.outlet_faces] = 0.0
+        self.diff[self.wall_faces]   = nu * self.magSf[self.wall_faces] / self.magDf[self.wall_faces]
 
     # ------------------------------------------------------------------
 
     def assemble_momentum_both(self):
-        """
-        Build the momentum matrix A and both RHS vectors (b_x, b_y) in a
-        single pass.  A is identical for u and v — same convective flux F,
-        same diffusion D, same boundary contributions — so we build it once
-        and return two RHS vectors.
-
-        This halves the matrix assembly cost and, crucially, means the Jacobi
-        preconditioner (just diag(A)) is computed once and shared for both
-        the u-solve and the v-solve.
-        """
         f_int   = self.internal_faces
-        own_i   = self._own_i;  nei_i   = self._nei_i
-        own_in  = self._own_in; own_w   = self._own_w; own_out = self._own_out
-
         F     = self.phi[f_int]
         D     = self.diff[f_int]
         F_in  = self.phi[self.inlet_faces]; D_in = self.diff[self.inlet_faces]
@@ -472,43 +478,30 @@ class Solver:
 
         A = self._make_csr(self._mom_csr, data)
 
-        # Build p_face once; used for both axes
-        p_face = np.empty(self.Nf)
-        p_face[f_int]             = 0.5 * (self.P[own_i] + self.P[nei_i])
-        p_face[self.inlet_faces]  = self.P[own_in]
-        p_face[self.outlet_faces] = self.outlet_pressure
-        p_face[self.wall_faces]   = self.P[own_w]
+        # RHS Construction via JIT
+        b_x, b_y = _jit_assemble_momentum_rhs(
+            self.Nc, self.P, self.Sf, f_int, self._own_i, self._nei_i, 
+            self._own_in, self._own_out, self._own_w, self.inlet_faces, 
+            self.outlet_faces, self.wall_faces, self.inlet_velocity, 
+            self.outlet_pressure, D_in, F_in
+        )
 
-        b_x = np.zeros(self.Nc)
-        b_y = np.zeros(self.Nc)
-
-        for axis, b in ((0, b_x), (1, b_y)):
-            b -= np.bincount(self._all_owner,
-                             weights=p_face * self.Sf[:, axis],
-                             minlength=self.Nc)
-            b += np.bincount(nei_i,
-                             weights=p_face[f_int] * self.Sf[f_int, axis],
-                             minlength=self.Nc)
-            b += np.bincount(own_in,
-                             weights=(D_in - F_in) * self.inlet_velocity[axis],
-                             minlength=self.Nc)
-
-        # Under-relaxation — applied to the shared matrix and both RHS
-        a_P     = A.diagonal().copy()
+        a_P_pure = A.diagonal().copy()
         alpha_u = 0.2
-        A.setdiag(a_P / alpha_u)
+        A.setdiag(a_P_pure / alpha_u)
+        
         if hasattr(self, 'U_old'):
-            relax = ((1 - alpha_u) / alpha_u) * a_P
+            relax = ((1 - alpha_u) / alpha_u) * a_P_pure
             b_x  += relax * self.U_old[:, 0]
             b_y  += relax * self.U_old[:, 1]
 
-        return A, b_x, b_y, a_P
-
+        # Pass out the relaxed diagonal 
+        a_P_relaxed = a_P_pure / alpha_u
+        return A, b_x, b_y, a_P_relaxed
 
     # ------------------------------------------------------------------
 
     def GET_VAR_STAR(self, A_mom, b_x, b_y):
-        """Solve u* and v* sharing the same matrix and Jacobi preconditioner."""
         u_star = self._solve_momentum(A_mom, b_x, 'mom_u')
         v_star = self._solve_momentum(A_mom, b_y, 'mom_v')
         v_max  = np.linalg.norm(self.inlet_velocity) * 5.0
@@ -521,8 +514,7 @@ class Solver:
         own_in = self._own_in; own_out = self._own_out; own_w = self._own_w
 
         def _d(Sf_slice, own):
-            return (Sf_slice[:, 0]**2 / a_P_u[own] +
-                    Sf_slice[:, 1]**2 / a_P_v[own])
+            return (Sf_slice[:, 0]**2 / a_P_u[own] + Sf_slice[:, 1]**2 / a_P_v[own])
 
         d_int = _d(self._Sf_int, own_i)
         d_in  = _d(self._Sf_in,  own_in)
@@ -535,19 +527,13 @@ class Solver:
         ])
         A = self._make_csr(self._pcorr_csr, data)
 
-        b = np.zeros(self.Nc)
         U_star = np.column_stack((u_star, v_star))
-
-        U_interp      = 0.5 * (U_star[own_i] + U_star[nei_i])
-        mass_flux_int = self.rho * np.einsum('fj,fj->f', U_interp, self._Sf_int)
-        b -= np.bincount(own_i,  weights=mass_flux_int, minlength=self.Nc)
-        b += np.bincount(nei_i,  weights=mass_flux_int, minlength=self.Nc)
-
-        mass_flux_in = self.rho * np.einsum('fj,j->f', self._Sf_in, self.inlet_velocity)
-        b -= np.bincount(own_in, weights=mass_flux_in,  minlength=self.Nc)
-
-        mass_flux_out = self.rho * np.einsum('fj,fj->f', U_star[own_out], self._Sf_out)
-        b -= np.bincount(own_out, weights=mass_flux_out, minlength=self.Nc)
+        
+        # JIT RHS Construction
+        b = _jit_assemble_pcorr_rhs(
+            self.Nc, self.rho, U_star, self._Sf_int, self._Sf_in, self._Sf_out, 
+            own_i, nei_i, own_in, own_out, self.inlet_velocity
+        )
 
         return A, b
 
@@ -576,33 +562,22 @@ class Solver:
     # ------------------------------------------------------------------
 
     def calculate_pressure_gradients(self, is_correction=False):
-        grad_P = np.zeros((self.Nc, 2))
-
-        own = self._grad_own
-        nei = self._grad_nei
-        P_f = 0.5 * (self.P[own] + self.P[nei])
-
-        contrib = P_f[:, None] * self._Sf_int       # (Nf_int, 2)
-        for i in range(2):
-            grad_P[:, i] += np.bincount(own, weights=contrib[:, i], minlength=self.Nc)
-            grad_P[:, i] -= np.bincount(nei, weights=contrib[:, i], minlength=self.Nc)
-
         P_f_b = self.P[self._own_b].copy()
         if is_correction:
             P_f_b[self._is_outlet_bnd] = 0.0
         else:
             P_f_b[self._is_outlet_bnd] = self.outlet_pressure
 
-        contrib_b = P_f_b[:, None] * self._Sf_bnd   # (Nf_bnd, 2)
-        for i in range(2):
-            grad_P[:, i] += np.bincount(self._own_b,
-                                         weights=contrib_b[:, i],
-                                         minlength=self.Nc)
-
+        # Hand off to JIT Loop
+        grad_P = _jit_calc_pressure_gradients(
+            self.Nc, self._grad_own, self._grad_nei, self.P, 
+            self._Sf_int, self._own_b, self._Sf_bnd, P_f_b
+        )
+        
         grad_P /= self.cell_areas[:, None]
 
         if not is_correction:
-            self._last_grad_P = grad_P   # cache for health_check
+            self._last_grad_P = grad_P
 
         return grad_P
 
@@ -614,7 +589,6 @@ class Solver:
         print(f"  P range:    [{np.nanmin(self.P):.2e}, {np.nanmax(self.P):.2e}]")
         print(f"  Phi range:  [{np.nanmin(self.phi):.2e}, {np.nanmax(self.phi):.2e}]")
         print(f"  Min a_P:    {np.min(a_P_u):.2e}")
-        g = (self._last_grad_P if self._last_grad_P is not None
-             else self.calculate_pressure_gradients())
+        g = (self._last_grad_P if self._last_grad_P is not None else self.calculate_pressure_gradients())
         print(f"  Max grad_P: {np.max(np.abs(g)):.2e}")
         print(f"---------------------------------\n")

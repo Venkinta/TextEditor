@@ -118,21 +118,15 @@ class PhysicsEditor:
 
         imgui.text(f"Reynolds Number: {reynolds:.2e}")
 
-        # DNS Estimator (3D Scaling: N ~ Re^2.25)
+        # DNS Estimator 
         if reynolds > 0:
-            dns_cells = math.pow(reynolds, 2.25)
+            # 2D DNS grid scaling is linear with Re due to the enstrophy dissipation scale
+            dns_cells = reynolds 
             
-            # Visual warning if the number is getting absurd
-            if dns_cells > 1e8:
-                imgui.text_colored("Est. DNS Cells: >100M (Heavy!)", 1.0, 0.4, 0.4)
+            if dns_cells > 5e6: # 5 Million cells is getting heavy for an interactive 2D solver
+                imgui.text_colored(f"Est. 2D DNS Cells: {dns_cells:.2e} (High for real-time)", 1.0, 0.4, 0.4)
             else:
-                imgui.text(f"Est. DNS Cells: {dns_cells:.2e}")
-
-            # Tooltip explaining the scaling
-            if imgui.is_item_hovered():
-                imgui.set_tooltip("Estimated number of cells required for DNS based on \n"
-                                "the Kolmogorov scale resolution: N ≈ Re^(9/4)")
-
+                imgui.text(f"Est. 2D DNS Cells: {dns_cells:.2e}")
         imgui.separator()
 
         opened, _ = imgui.collapsing_header("Boundary layer settings")

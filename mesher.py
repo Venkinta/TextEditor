@@ -210,10 +210,6 @@ class Mesher:
         cols = int(np.ceil((xmax - xmin) / w))
         rows = int(np.ceil((ymax - ymin) / w))
 
-        if cols * rows > 500000:
-            print(f"Warning: Grid too dense ({cols}x{rows}). Increase 'r'.")
-            self.points = np.array([])
-            return
 
         grid = np.full((cols, rows), None, dtype=object)
         points = []
