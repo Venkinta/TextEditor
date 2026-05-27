@@ -85,11 +85,15 @@ class Solver:
         }
 """
     def __init__(self, mesher_data, inlet_velocity, outlet_pressure, rho, viscosity):
+        # ---Solver parameters
+        self.alpha_u = 0.3 #relaxation factor for velocity
+        self.alpha_p = 0.1 #relaxation factor for pressure
+                
         # ---Physical parameters---
         self.inlet_velocity  = np.asarray(inlet_velocity, dtype=np.float64)
         self.outlet_pressure = float(outlet_pressure)
         self.rho             = float(rho)
-        self.viscosity       = float(viscosity)
+        self.viscosity       = float(viscosity)/float(rho) #Moving from dynamic viscosity to kinematic 
 
         # ---Mesher data: number of cells and faces
         mesh = mesher_data
@@ -426,10 +430,13 @@ class Solver:
             # -----------------------------------------------------------------
             # Convergence check — RMS continuity residual
             # -----------------------------------------------------------------
-            if res_cont_rms < tolerance:
-                print(f"\nConverged at iteration {iteration} "
-                    f"(continuity RMS = {res_cont_rms:.2e})!")
-                break
+            if iteration> 50:
+                if res_cont_rms < tolerance:
+                    print(f"\nConverged at iteration {iteration}!")
+                    print(f"  Cont (RMS) = {res_cont_rms:.2e}")
+                    print(f"  U    (RMS) = {res_u_rms:.2e}")
+                    print(f"  V    (RMS) = {res_v_rms:.2e}")
+                    break
         else:
             print(f"\nDid not converge in {max_iterations} iterations — "
                 f"final continuity RMS = {res_cont_rms:.2e}")
@@ -546,59 +553,6 @@ class Solver:
 
     # ------------------------------------------------------------------
 
-    def assemble_momentum(self, axis):
-        f_int  = self.internal_faces
-        own_i  = self._own_i;  nei_i  = self._nei_i
-        own_in = self._own_in; own_w  = self._own_w; own_out = self._own_out
-
-        F    = self.phi[f_int]
-        D    = self.diff[f_int]
-        F_in = self.phi[self.inlet_faces];  D_in = self.diff[self.inlet_faces]
-        D_w  = self.diff[self.wall_faces]
-        F_out = self.phi[self.outlet_faces]
-
-        # Build data matching the precomputed (mom_rows, mom_cols) exactly
-        data = np.concatenate([
-            np.maximum( F, 0) + D,       # (own_i, own_i)
-            -(np.maximum(-F, 0) + D),    # (own_i, nei_i)
-            np.maximum(-F, 0) + D,       # (nei_i, nei_i)
-            -(np.maximum( F, 0) + D),    # (nei_i, own_i)
-            D_in,                         # (own_in, own_in)
-            D_w,                          # (own_w,  own_w)
-            np.maximum(F_out, 0),         # (own_out, own_out)
-        ])
-
-        A = self._make_csr(self._mom_csr, data)
-
-        # RHS — pressure gradient via bincount (replaces np.add.at)
-        b = np.zeros(self.Nc)
-
-        p_face = np.empty(self.Nf)
-        p_face[f_int]             = 0.5 * (self.P[own_i] + self.P[nei_i])
-        p_face[self.inlet_faces]  = self.P[own_in]
-        p_face[self.outlet_faces] = self.outlet_pressure
-        p_face[self.wall_faces]   = self.P[own_w]
-
-        w_all = p_face * self.Sf[:, axis]
-        b -= np.bincount(self._all_owner, weights=w_all, minlength=self.Nc)
-        b += np.bincount(nei_i,
-                         weights=p_face[f_int] * self.Sf[f_int, axis],
-                         minlength=self.Nc)
-        b += np.bincount(own_in,
-                         weights=(D_in - F_in) * self.inlet_velocity[axis],
-                         minlength=self.Nc)
-
-        # Under-relaxation
-        a_P = A.diagonal().copy()
-        alpha_u = 0.2
-        A.setdiag(a_P / alpha_u)
-        if hasattr(self, 'U_old'):
-            b += ((1 - alpha_u) / alpha_u) * a_P * self.U_old[:, axis]
-
-        return A, b, a_P
-
-    # ------------------------------------------------------------------
-
     def assemble_momentum_both(self):
         """
         Build the momentum matrix A and both RHS vectors (b_x, b_y) in a
@@ -655,7 +609,7 @@ class Solver:
 
         # Under-relaxation — applied to the shared matrix and both RHS
         a_P     = A.diagonal().copy()
-        alpha_u = 0.2
+        alpha_u = self.alpha_u
         A.setdiag(a_P / alpha_u)
         if hasattr(self, 'U_old'):
             relax = ((1 - alpha_u) / alpha_u) * a_P
@@ -690,7 +644,7 @@ class Solver:
 
         # Pressure‑velocity coupling coefficients (d = Sf² / a_P per face)
         def _d(Sf_slice, own):
-            return (Sf_slice[:, 0]**2 / a_P_u[own] +
+            return self.rho*(Sf_slice[:, 0]**2 / a_P_u[own] +
                     Sf_slice[:, 1]**2 / a_P_v[own])
 
         d_int = _d(self._Sf_int, own_i)
@@ -758,7 +712,7 @@ class Solver:
     # Corrected pressure / velocity update without global pressure shift
     # ------------------------------------------------------------------
     def CORRECT_PRESSURE_AND_VELOCITY(self, p_prime, a_P_u, a_P_v, u_star, v_star):
-        alpha_p = 0.1
+        alpha_p = self.alpha_p
         self.P += alpha_p * p_prime
         # Removed the global pressure shift that forced the average outlet
         # pressure to match outlet_pressure. The fixed‑pressure outlet BC
@@ -769,10 +723,9 @@ class Solver:
         self.P = p_prime
         grad_p_prime = self.calculate_pressure_gradients(is_correction=True)
         self.P = P_tmp
-
-        alpha_u = 0.2
-        self.U[:, 0] = u_star - alpha_u * (self.cell_areas / a_P_u) * grad_p_prime[:, 0]
-        self.U[:, 1] = v_star - alpha_u * (self.cell_areas / a_P_v) * grad_p_prime[:, 1]
+        
+        self.U[:, 0] = u_star -  (self.cell_areas / a_P_u) * grad_p_prime[:, 0]
+        self.U[:, 1] = v_star -  (self.cell_areas / a_P_v) * grad_p_prime[:, 1]
     # ------------------------------------------------------------------
 
     def calculate_pressure_gradients(self, is_correction=False):
