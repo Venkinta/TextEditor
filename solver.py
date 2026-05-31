@@ -93,7 +93,7 @@ class Solver:
         self.inlet_velocity  = np.asarray(inlet_velocity, dtype=np.float64)
         self.outlet_pressure = float(outlet_pressure)
         self.rho             = float(rho)
-        self.viscosity       = float(viscosity)/float(rho) #Moving from dynamic viscosity to kinematic 
+        self.viscosity       = float(viscosity) #Moving from dynamic viscosity to kinematic 
 
         # ---Mesher data: number of cells and faces
         mesh = mesher_data
@@ -545,11 +545,11 @@ class Solver:
         self.phi[self.outlet_faces] = (
             self.rho * np.einsum('fj,fj->f', self.U[self._own_out], self._Sf_out))
 
-        nu = self.viscosity
-        self.diff[f_int]                = nu * self.magSf[f_int]              / self.magDf[f_int]
-        self.diff[self.inlet_faces]     = nu * self.magSf[self.inlet_faces]   / self.magDf[self.inlet_faces]
+        mu = self.viscosity
+        self.diff[f_int]                = mu * self.magSf[f_int]              / self.magDf[f_int]
+        self.diff[self.inlet_faces]     = mu * self.magSf[self.inlet_faces]   / self.magDf[self.inlet_faces]
         self.diff[self.outlet_faces]    = 0.0
-        self.diff[self.wall_faces]      = nu * self.magSf[self.wall_faces]    / self.magDf[self.wall_faces]
+        self.diff[self.wall_faces]      = mu * self.magSf[self.wall_faces]    / self.magDf[self.wall_faces]
 
     # ------------------------------------------------------------------
 
