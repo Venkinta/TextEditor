@@ -1,8 +1,0 @@
-owner: Array(Nf), index of the cell on the "left" of the Face
-neighbor: Array(Nf), index of the other one. If boundary: -1 -> look at physics tag
-
-Sf: array(Nf,2), vector normal to the Face
-magDf: array(Nf), distance between owner and neighbour
-Cf: array(Nf,2)coordinates of face center
-
-boundary tags: (array,Nf): internal face(-1), wall(0),inlet(1),outlet(2)
