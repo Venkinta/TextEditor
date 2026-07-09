@@ -17,6 +17,15 @@ class PhysicsEditor:
         self.mesh_requested = False
         self.solve_requested = False
         self.has_mesh = False
+
+        # Reference to the Mesher instance (set by main.py after meshing) so
+        # the Save dialog can reach solver_data_pipeline(). None until meshed.
+        self.mesher = None
+
+        # Loaded-mesh handoff: when a .npz is loaded, main.py consumes this
+        # dict and skips the meshing step entirely.
+        self.load_requested = False
+        self.loaded_mesh = None
         
         # --- Fluid Properties (always SI) ---
         self.density = 1.2       # kg/m3
@@ -67,6 +76,8 @@ class PhysicsEditor:
                 camera.draw_vbo(vbos['quads'][0], vbos['quads'][1], color=(0, 255, 100))
             if 'walls' in vbos:
                 camera.draw_vbo(vbos['walls'][0], vbos['walls'][1], color=(255, 255, 255))
+            if 'loaded' in vbos:
+                camera.draw_vbo(vbos['loaded'][0], vbos['loaded'][1], color=(200, 200, 200))
 
         u = self._unit_names[self._unit_idx]
 
@@ -161,6 +172,12 @@ class PhysicsEditor:
             imgui.same_line()
             if imgui.button("Solve"):
                 self.solve_requested = True
+        imgui.same_line()
+        if imgui.button("Save Mesh"):
+            self.open_save_dialog()
+        imgui.same_line()
+        if imgui.button("Load Mesh"):
+            self.open_load_dialog()
         imgui.end()
 
         # ---- Per-Line Selection Popup ----
@@ -216,3 +233,59 @@ class PhysicsEditor:
         self.selected_line = None
 
     # ------------------------------------------------------------------
+    def open_save_dialog(self):
+        """Opens a native OS file dialog to choose where to save the mesh."""
+        import tkinter as tk
+        from tkinter import filedialog
+        from . import meshIO
+
+        # 1. Initialize a hidden Tkinter root window
+        # (Otherwise, a blank, ugly white box pops up alongside the file explorer)
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)  # Force the file explorer to open on top of Pygame
+
+        # 2. Open the native "Save As" window
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".npz",
+            filetypes=[("NumPy Compressed Archive", "*.npz"), ("All Files", "*.*")],
+            title="Export Solver Mesh"
+        )
+
+        # 3. Destroy the hidden root immediately so it cleans up resources
+        root.destroy()
+
+        # 4. If the user didn't click 'Cancel', extract the data and save it!
+        if filepath:
+            print(f"[UI] User selected save path: {filepath}")
+            if self.mesher is not None:
+                mesh_data = self.mesher.solver_data_pipeline()
+            elif self.loaded_mesh is not None:
+                mesh_data = self.loaded_mesh
+            else:
+                print("[UI] No mesh available to save yet — mesh first.")
+                return
+            meshIO.save_mesh_for_solver(mesh_data, filepath)
+
+    def open_load_dialog(self):
+        """Opens a native OS file dialog to pick a saved mesh (.npz) to load."""
+        import tkinter as tk
+        from tkinter import filedialog
+        from . import meshIO
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        filepath = filedialog.askopenfilename(
+            defaultextension=".npz",
+            filetypes=[("NumPy Compressed Archive", "*.npz"), ("All Files", "*.*")],
+            title="Load Solver Mesh"
+        )
+
+        root.destroy()
+
+        if filepath:
+            print(f"[UI] User selected load path: {filepath}")
+            self.loaded_mesh = meshIO.load_mesh_for_solver(filepath)
+            self.load_requested = True

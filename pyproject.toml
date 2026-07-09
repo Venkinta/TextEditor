@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfdeditor"
-version = "1.0.0"
+version = "1.0.1"
 description = "Interactive 2D CFD Solver with CAD Frontend"
 readme = "README.md"
 license = {text = "MIT"}
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Venkinta/TextEditor"
+Repository = "https://github.com/Venkinta/NFLUID"
 
 [project.scripts]
 cfdeditor = "cfdeditor.__main__:run_app"

@@ -10,7 +10,6 @@ from shapely.geometry import Polygon as ShapelyPoly
 from shapely.geometry import Point as ShapelyPoint
 from .triangle import Triangle
 import time
-
 import cProfile
 import pstats
 
@@ -343,11 +342,9 @@ class Mesher:
             if hasattr(self, "triangulation") and self.triangulation:
                 self.triangulation.draw(screen, camera)
 
-        imgui.begin("Solver")
-        if imgui.button("Proceed to Solving"):
-            self.finish()
-        imgui.end()
-
+        # NOTE: This draw() method is not currently invoked by main.py — the
+        # PHYSICS state renders the mesh via physics_editor.draw() and the
+        # Save/Load UI lives there too. Kept as a fallback renderer only.
         imgui.render()
         self.renderer.render(imgui.get_draw_data())
         
@@ -507,7 +504,7 @@ class Mesher:
         for t in to_remove:
             self.triangulation.remove_triangle(t)
 
-    # ------------------------------------------------------------------
+    
     def solver_data_pipeline(self):
         """
         Builds the mesh data dict for the Solver.
@@ -670,6 +667,36 @@ class Mesher:
         print(f"  Pipeline total: {time.perf_counter()-t_pipe:.3f}s  →  solver ready")
         print("="*50 + "\n")
 
+        # ----------------------------------------------------------------
+        # 6. CELL VERTEX GEOMETRY  — for the Visualizer (and mesh reload)
+        #    The solver ignores these; they ride along so a saved mesh can
+        #    be re-displayed without the original Mesher object.
+        # ----------------------------------------------------------------
+        max_verts = 4  # quads are the largest cell type
+        cell_vertices = np.zeros((Nc, max_verts, 2), dtype=np.float64)
+        cell_nverts   = np.zeros(Nc, dtype=np.int32)
+        cell_types    = np.zeros(Nc, dtype=np.int32)   # 0=triangle, 1=quad
+        for ci, cell in enumerate(Cells):
+            pts = cell.vertices()
+            cell_nverts[ci] = len(pts)
+            cell_types[ci]  = 1 if len(pts) == 4 else 0
+            for vi, p in enumerate(pts):
+                cell_vertices[ci, vi, 0] = p.x
+                cell_vertices[ci, vi, 1] = p.y
+        cell_vertices *= s   # world units → SI metres
+
+        # ----------------------------------------------------------------
+        # 7. CAD LINES  — so a loaded mesh can be remeshed and its boundary
+        #    conditions edited.  Each row: [ax, ay, bx, by, bc_type_idx]
+        #    bc_type_idx: 0=Wall, 1=Velocity Inlet, 2=Pressure Outlet
+        # ----------------------------------------------------------------
+        bc_map_rev = {"Wall": 0, "Velocity Inlet": 1, "Pressure Outlet": 2}
+        cad_lines = np.array([
+            [line.a.x, line.a.y, line.b.x, line.b.y,
+             bc_map_rev.get(line.boundary_type, 0)]
+            for line in self.lines
+        ], dtype=np.float64)
+
         return {
             'Nc':           Nc,
             'Nf':           Nf,
@@ -683,7 +710,13 @@ class Mesher:
             'cell_centers': cell_centers_si,
             'cell_areas':   cell_areas_si,
             'boundary_tags': boundary_tags,
+            'cell_vertices': cell_vertices,
+            'cell_nverts':   cell_nverts,
+            'cell_types':    cell_types,
+            'cad_lines':     cad_lines,
         }
 
+
+               
     def finish(self):
         self.finished = True

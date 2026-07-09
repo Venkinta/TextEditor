@@ -11,11 +11,11 @@ class Visualizer:
         self.P = P
         self.U = U
         self.U_mag = np.linalg.norm(U, axis=1)
-        
+
         # === NEW: Capture local cell-by-cell residuals ===
         self.res_cont = res_cont if res_cont is not None else np.zeros_like(P)
         self.res_mom = res_mom if res_mom is not None else np.zeros_like(P)
-        
+
         # === CHANGED: Added diagnostic options into your existing variables ===
         self.vars = ["Pressure", "Velocity", "Continuity Error", "Momentum Error"]
         self.var_idx = 0
@@ -36,41 +36,63 @@ class Visualizer:
 
         # Spatial Indexing Data
         self.centroids = []
-        self.cell_data_map = [] 
+        self.cell_data_map = []
         self.tree = None
 
         self._setup_geometry_vbo()
         self._update_vector_vbo()
-        
+
         # Build the KDTree for the probe
         self.tree = cKDTree(self.centroids)
 
     def _setup_geometry_vbo(self):
-        """Flattens cells and stores centroids for the spatial index."""
+        """Flattens cells and stores centroids for the spatial index.
+
+        Two geometry sources are supported:
+          * a `Mesher` object (live solve) — uses its cell polygons directly;
+          * a solver-data dict (loaded .npz) — uses the `cell_vertices` /
+            `cell_nverts` / `cell_centers` arrays that ride along in the file.
+        """
         vertices = []
         self.cell_vertex_counts = []
         centroids = []
         self.cell_data_map = []
 
-        # Process all cells (boundary and internal)
-        all_cells = [c for c in self.mesher.boundary_elements if float(c.area) > 1e-8]
-        all_cells.extend(self.mesher.triangulation.triangles)
-
-        for i, cell in enumerate(all_cells):
-            pts = cell.vertices()
-            # Use the cell's own centroid (shoelace for quads, average for
-            # triangles) so the probe location matches the solver's geometry.
-            c = cell.centroid
-            centroids.append([c.x, c.y])
-            self.cell_data_map.append(cell)
-
-            if len(pts) == 4: # Quad
-                vertices.extend([(pts[0].x, pts[0].y), (pts[1].x, pts[1].y), (pts[2].x, pts[2].y)])
-                vertices.extend([(pts[0].x, pts[0].y), (pts[2].x, pts[2].y), (pts[3].x, pts[3].y)])
-                self.cell_vertex_counts.append(6)
-            else: # Triangle
-                vertices.extend([(pts[0].x, pts[0].y), (pts[1].x, pts[1].y), (pts[2].x, pts[2].y)])
-                self.cell_vertex_counts.append(3)
+        if isinstance(self.mesher, dict):
+            # Loaded mesh: geometry comes from the saved dict (SI metres).
+            cv = self.mesher['cell_vertices']   # (Nc, max_verts, 2)
+            nv = self.mesher['cell_nverts']      # (Nc,)
+            cc = self.mesher['cell_centers']     # (Nc, 2)
+            for i in range(len(nv)):
+                n = int(nv[i])
+                pts = [(float(cv[i, v, 0]), float(cv[i, v, 1])) for v in range(n)]
+                centroids.append([cc[i, 0], cc[i, 1]])
+                self.cell_data_map.append(pts)  # store polygon for probe test
+                if n == 4:  # Quad
+                    vertices.extend([pts[0], pts[1], pts[2]])
+                    vertices.extend([pts[0], pts[2], pts[3]])
+                    self.cell_vertex_counts.append(6)
+                else:       # Triangle
+                    vertices.extend([pts[0], pts[1], pts[2]])
+                    self.cell_vertex_counts.append(3)
+        else:
+            # Live mesh: use the Mesher's cell objects directly.
+            all_cells = [c for c in self.mesher.boundary_elements if float(c.area) > 1e-8]
+            all_cells.extend(self.mesher.triangulation.triangles)
+            for cell in all_cells:
+                pts = cell.vertices()
+                # Use the cell's own centroid (shoelace for quads, average for
+                # triangles) so the probe location matches the solver's geometry.
+                c = cell.centroid
+                centroids.append([c.x, c.y])
+                self.cell_data_map.append(cell)
+                if len(pts) == 4:  # Quad
+                    vertices.extend([(pts[0].x, pts[0].y), (pts[1].x, pts[1].y), (pts[2].x, pts[2].y)])
+                    vertices.extend([(pts[0].x, pts[0].y), (pts[2].x, pts[2].y), (pts[3].x, pts[3].y)])
+                    self.cell_vertex_counts.append(6)
+                else:  # Triangle
+                    vertices.extend([(pts[0].x, pts[0].y), (pts[1].x, pts[1].y), (pts[2].x, pts[2].y)])
+                    self.cell_vertex_counts.append(3)
 
         v_array = np.array(vertices, dtype=np.float32)
         self.centroids = np.array(centroids, dtype=np.float32)
@@ -81,22 +103,29 @@ class Visualizer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
     def _is_point_in_cell(self, px, py, cell):
-        """Checks if point (px, py) is inside a convex polygon, regardless of winding."""
-        pts = cell.vertices()
+        """Checks if point (px, py) is inside a convex polygon, regardless of winding.
+
+        `cell` is either a Mesher cell object (has .vertices()) or, for a loaded
+        mesh, a plain list of (x, y) tuples stored in cell_data_map.
+        """
+        if hasattr(cell, "vertices"):
+            pts = [(p.x, p.y) for p in cell.vertices()]
+        else:
+            pts = cell
         n = len(pts)
         signs = []
-        
+
         for i in range(n):
-            p1 = pts[i]
-            p2 = pts[(i + 1) % n]
-            
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+
             # 2D Cross Product: (x2-x1)*(y-y1) - (y2-y1)*(x-x1)
-            val = (p2.x - p1.x) * (py - p1.y) - (p2.y - p1.y) * (px - p1.x)
-            
+            val = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
+
             # Exact edge hits count as inside
             if abs(val) < 1e-9:
                 continue
-                
+
             signs.append(val > 0)
 
         # If all edges produced the same sign, the point is inside

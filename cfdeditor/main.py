@@ -17,7 +17,9 @@ from OpenGL.GL import *
 import imgui
 from imgui.integrations.pygame import PygameRenderer
 from .visualizer import Visualizer
+from .point import Point
 
+import numpy as np
 import cProfile
 import pstats
 
@@ -131,11 +133,72 @@ def run_app():
                         vbos[key] = (vbo_id, count)
                 glBindBuffer(GL_ARRAY_BUFFER, 0)
                 physicseditor.has_mesh = True
+                physicseditor.mesher = mesher
+
+            # --- Load a previously saved mesh (.npz) ---
+            if physicseditor.load_requested:
+                physicseditor.load_requested = False
+                loaded = physicseditor.loaded_mesh
+
+                # Reconstruct CAD lines from the saved dict so the user can
+                # edit boundary conditions and remesh.
+                bc_names = ["Wall", "Velocity Inlet", "Pressure Outlet"]
+                cad = loaded['cad_lines']
+                lines = []
+                for row in cad:
+                    ax, ay, bx, by, bc_idx = row
+                    line = Line(Point(ax, ay), Point(bx, by))
+                    line.boundary_type = bc_names[int(bc_idx)]
+                    lines.append(line)
+                physicseditor.lines = lines
+
+                # Build coloured wireframe VBOs from cell_vertices in the
+                # loaded dict. The dict stores SI metres; convert back to
+                # world units for display (the camera renders in world units).
+                cv = loaded['cell_vertices'] / physicseditor.unit_to_meters
+                nv = loaded['cell_nverts']
+                tri_coords, quad_coords = [], []
+                for i in range(len(nv)):
+                    n = int(nv[i])
+                    pts = [(float(cv[i, v, 0]), float(cv[i, v, 1])) for v in range(n)]
+                    if n == 4:  # Quad edges (8 vertices)
+                        quad_coords.extend([pts[0], pts[1], pts[1], pts[2],
+                                            pts[2], pts[3], pts[3], pts[0]])
+                    else:        # Triangle edges (6 vertices)
+                        tri_coords.extend([pts[0], pts[1], pts[1], pts[2],
+                                           pts[2], pts[0]])
+
+                # Free any previous VBOs before uploading new ones
+                for _vbo_id, _ in vbos.values():
+                    glDeleteBuffers(1, [_vbo_id])
+                vbos = {}
+                if tri_coords:
+                    vbo_data = np.array(tri_coords, dtype=np.float32)
+                    vbo_id = glGenBuffers(1)
+                    glBindBuffer(GL_ARRAY_BUFFER, vbo_id)
+                    glBufferData(GL_ARRAY_BUFFER, vbo_data.nbytes, vbo_data, GL_STATIC_DRAW)
+                    glBindBuffer(GL_ARRAY_BUFFER, 0)
+                    vbos['triangles'] = (vbo_id, len(tri_coords))
+                if quad_coords:
+                    vbo_data = np.array(quad_coords, dtype=np.float32)
+                    vbo_id = glGenBuffers(1)
+                    glBindBuffer(GL_ARRAY_BUFFER, vbo_id)
+                    glBufferData(GL_ARRAY_BUFFER, vbo_data.nbytes, vbo_data, GL_STATIC_DRAW)
+                    glBindBuffer(GL_ARRAY_BUFFER, 0)
+                    vbos['quads'] = (vbo_id, len(quad_coords))
+
+                physicseditor.has_mesh = True
+                physicseditor.mesher = None   # no original Mesher object
+                # REMAIN in PHYSICS — user sees the mesh and can adjust params / Solve
 
             # --- Solve ---
             if physicseditor.solve_requested:
                 physicseditor.solve_requested = False
-                current_state = "SOLVER"
+                if physicseditor.loaded_mesh is not None:
+                    # Loaded mesh → no mesher object; use SOLVER_LOADED path
+                    current_state = "SOLVER_LOADED"
+                else:
+                    current_state = "SOLVER"
 
         elif current_state == "SOLVER":
             solver = Solver(
@@ -148,6 +211,26 @@ def run_app():
             solver.Solve()
             visualizer = Visualizer(renderer, mesher, solver.P, solver.U,
                                     res_cont=solver.final_res_cont, 
+                                    res_mom=solver.final_res_mom)
+            current_state = "VISUALIZER"
+
+        elif current_state == "SOLVER_LOADED":
+            # No mesher available — geometry comes from the loaded dict itself.
+            loaded = physicseditor.loaded_mesh
+            solver = Solver(
+                loaded,
+                [physicseditor.inlet_velocity, 0.0],
+                physicseditor.outlet_pressure,
+                physicseditor.density,
+                physicseditor.viscosity,
+            )
+            solver.Solve()
+            # Convert cell_vertices back to world units for the Visualizer
+            # (the camera renders in world units, but the dict stores SI metres).
+            vis_dict = dict(loaded)
+            vis_dict['cell_vertices'] = loaded['cell_vertices'] / physicseditor.unit_to_meters
+            visualizer = Visualizer(renderer, vis_dict, solver.P, solver.U,
+                                    res_cont=solver.final_res_cont,
                                     res_mom=solver.final_res_mom)
             current_state = "VISUALIZER"
 
@@ -172,6 +255,17 @@ def run_app():
         elif current_state == "PHYSICS":
             physicseditor.draw(screen, camera, vbos)
         elif current_state == "SOLVER":
+            if vbos:
+                # Interior Triangles (Blue)
+                if 'triangles' in vbos:
+                    camera.draw_vbo(vbos['triangles'][0], vbos['triangles'][1], color=(0, 100, 255))
+                # Boundary Quads (Green)
+                if 'quads' in vbos:
+                    camera.draw_vbo(vbos['quads'][0], vbos['quads'][1], color=(0, 255, 100))
+                # CAD Walls (White)
+                if 'walls' in vbos:
+                    camera.draw_vbo(vbos['walls'][0], vbos['walls'][1], color=(255, 255, 255))
+        elif current_state == "SOLVER_LOADED":
             if vbos:
                 # Interior Triangles (Blue)
                 if 'triangles' in vbos:

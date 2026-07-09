@@ -6,7 +6,7 @@ A complete **2D Computational Fluid Dynamics (CFD) pipeline** with an interactiv
 
 ```bash
 pip install -r requirements.txt
-python main.py
+python NFluid.py
 ```
 
 **Requires:** Python 3.10+, a GPU with OpenGL support.
@@ -16,6 +16,13 @@ python main.py
 ```
 CAD Drawing  →  Assign BCs  →  Generate Mesh  →  Solve  →  Visualize
    (EDITOR)      (PHYSICS)       (MESHER)       (SOLVER)   (VISUALIZER)
+```
+
+You can also **skip the CAD step** by loading a previously saved mesh:
+
+```
+Load Mesh  →  Inspect / Edit BCs  →  (Remesh)  →  Solve  →  Visualize
+  (PHYSICS)      (PHYSICS)            (MESHER)    (SOLVER)   (VISUALIZER)
 ```
 
 ### 1. Draw Your Geometry (EDITOR)
@@ -112,7 +119,7 @@ Optional but recommended: `pip install pyamg` for faster pressure solves.
 | `bowyerwatson.py` | Delaunay triangulation algorithm |
 | `constructor.py` | Numba JIT kernels and geometry helpers |
 | `snapengine.py` | Vertex and axis snapping |
-| `meshio_importer.py` | External mesh import (placeholder) |
+| `meshIO.py` | Save/Load mesh to/from compressed `.npz` files |
 | `CODEBASE_REFERENCE.md` | Internal developer documentation |
 
 ## Known Limitations
@@ -120,7 +127,6 @@ Optional but recommended: `pip install pyamg` for faster pressure solves.
 - **Units migration in progress**: The solver expects SI units (metres). The mesher→solver handoff converts world units to metres via `unit_to_meters`, and boundary-face tagging tolerance is now scale-aware (`boundary_spacing`), so metre-scale geometries tag correctly. CAD defaults still assume mm.
 - **Per-line BC values** (`u_val`, `v_val`, `p_val` on `Line`) are declared but not yet used by the solver.
 - **No unit tests** — currently relies on visual verification and console output.
-- **Mesh import** (`meshio_importer.py`) is an empty placeholder.
 - **Solver runs synchronously** in the SOLVER state and blocks the UI until convergence (no progress rendering mid-solve).
 
 ## Technical Background
