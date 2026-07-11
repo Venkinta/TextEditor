@@ -168,6 +168,17 @@ def run_app():
                         physicseditor._unit_idx = i
                         break
 
+                # Restore refinement zones so they persist across save/load.
+                if 'refinement_zones' in loaded:
+                    zones = []
+                    for coords, factor in loaded['refinement_zones']:
+                        xs = coords[:, 0]; ys = coords[:, 1]
+                        zones.append({
+                            'rect': (float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())),
+                            'factor': float(factor),
+                        })
+                    physicseditor.refinement_zones = zones
+
                 # Build coloured wireframe VBOs from cell_vertices in the
                 # loaded dict. The dict stores SI metres; convert back to
                 # world units for display (the camera renders in world units).
@@ -241,10 +252,15 @@ def run_app():
                 physicseditor.viscosity,
             )
             solver.Solve()
-            # Convert cell_vertices back to world units for the Visualizer
+            # Convert geometry back to world units for the Visualizer
             # (the camera renders in world units, but the dict stores SI metres).
+            # This ensures velocity vectors, KDTree spatial indexing, and
+            # point-in-cell probes all work correctly on loaded meshes.
             vis_dict = dict(loaded)
-            vis_dict['cell_vertices'] = loaded['cell_vertices'] / physicseditor.unit_to_meters
+            scale = physicseditor.unit_to_meters
+            vis_dict['cell_vertices'] = loaded['cell_vertices'] / scale
+            vis_dict['cell_centers']  = loaded['cell_centers']  / scale
+            
             visualizer = Visualizer(renderer, vis_dict, solver.P, solver.U,
                                     res_cont=solver.final_res_cont,
                                     res_mom=solver.final_res_mom)

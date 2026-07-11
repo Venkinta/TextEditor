@@ -973,6 +973,13 @@ class Mesher:
             'boundary_spacing':  self.boundary_spacing,
             'r':                 self.r,
             'unit_to_meters':    self.unit_to_meters,
+            # --- Refinement zones (ride along for save/load; solver ignores) ---
+            # Each zone is (shapely_polygon, factor). Serialize the polygon's
+            # exterior ring as an Nx2 array so it survives np.savez_compressed.
+            'refinement_zones': np.array([
+                (np.array(poly.exterior.coords, dtype=np.float64), float(factor))
+                for poly, factor in self.refinement_zones
+            ], dtype=object),
         }
 
 

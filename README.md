@@ -51,6 +51,7 @@ factor, first-layer thickness, boundary spacing, mesh size, and the world-unit
 selection) are restored into the PHYSICS panel, so the UI reflects the values
 that produced the loaded mesh. The CAD lines and their boundary types are also
 reconstructed, so you can edit conditions or remesh before solving.
+**Refinement zones** are also preserved across save/load.
 
 ### 3. Solve (SOLVER)
 The solver runs automatically after meshing. It uses the **SIMPLE algorithm** with:

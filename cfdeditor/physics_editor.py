@@ -453,3 +453,4 @@ class PhysicsEditor:
             print(f"[UI] User selected load path: {filepath}")
             self.loaded_mesh = meshIO.load_mesh_for_solver(filepath)
             self.load_requested = True
+            self.selected_line = None  # Reset selection to avoid crash on stale line object

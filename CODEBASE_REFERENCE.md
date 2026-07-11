@@ -129,7 +129,7 @@ Returns a `Point`. The returned Point may be a reference to an *existing* endpoi
 | `density` | 1.2 | kg/m³ (SI) |
 | `viscosity` | 0.002 | Pa·s (SI) |
 
-**Refinement zones:** `refinement_zones` is a list of dicts `{ 'rect': (x1, y1, x2, y2), 'factor': float }`. Each zone is a rectangle drawn by the user (click-drag on canvas). The `factor` divides the global `r` to get the local Steiner spacing: `local_r = r / factor`. The UI shows the resulting mesh size (`r / factor`) next to each zone. Zones are converted to `(shapely_polygon, factor)` tuples via `_get_refinement_polygons()` and passed to the Mesher.
+**Refinement zones:** `refinement_zones` is a list of dicts `{ 'rect': (x1, y1, x2, y2), 'factor': float }`. Each zone is a rectangle drawn by the user (click-drag on canvas). The `factor` divides the global `r` to get the local Steiner spacing: `local_r = r / factor`. The UI shows the resulting mesh size (`r / factor`) next to each zone. Zones are converted to `(shapely_polygon, factor)` tuples via `_get_refinement_polygons()` and passed to the Mesher. **Zones persist across mesh save/load** — they are serialized as polygon exterior coords + factor in the `.npz` file and restored into `physicseditor.refinement_zones` on load.
 
 **BC assignment:** Clicking a line (via `handle_selection`) opens a per-line ImGui window. The `boundary_types` list order matters — index maps to the combo box index AND to the `bc_map` in Mesher.
 
@@ -165,7 +165,7 @@ The most complex module. Four main phases:
 - `filter_triangles()` removes triangles outside the inner ring using `matplotlib.path.Path.contains_points`.
 
 #### Distance-Weighted Interpolation (`_gx_int`)
-- Computed once in `_precompute_topology()` as `self._gx_int = d_Pf / d_PN`, where `d_Pf` is the distance from the owner cell center to the shared face midpoint and `d_PN` is the total owner→neighbor center distance (`magDf`).
+- Computed once in `_precompute_topology()` (lines 202-214) as `self._gx_int = d_Pf / d_PN`, where `d_Pf` is the distance from the owner cell center to the shared face midpoint and `d_PN` is the total owner→neighbor center distance (`magDf`).
 - Replaces the implicit **0.5 arithmetic mean** (`0.5 * (U_own + U_nei)`) with proper distance-weighted interpolation: `U_interp = (1 - g_x) * U_own + g_x * U_nei`.
 - Applied consistently to: velocity interpolation at faces (`U_interp` in `_compute_rhie_chow_flux` and `SIMPLE_UPDATE_FACE_FLUX_AND_DIFFUSSION`), pressure gradient interpolation (`gP_f`), coupling coefficient `a_P_f` (the `d = Sf²/a_P` term), cell volume/area interpolation (`vol_f`), and pressure face value `p_face` in the momentum RHS.
 - **Why it matters:** On a uniform mesh `g_x = 0.5` exactly, so behavior is identical to before. On a refined/non-uniform mesh (small refined cell next to a large coarse cell), the face midpoint is much closer to the small cell's center — the 0.5 average biased interpolation toward the wrong cell, creating artificial pressure gradients that made refinement zones behave like solid bodies (numerical "resistance"). The distance-weighted form is the textbook-correct approach for non-uniform/skewed unstructured meshes and is what makes the v1.2.0 refinement zones numerically sound.

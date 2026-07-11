@@ -14,7 +14,9 @@ def save_mesh_for_solver(mesh_data, filepath):
 
 def load_mesh_for_solver(filepath):
     """Loads a saved mesh file directly into a clean Python dictionary for the solver."""
-    with np.load(filepath) as loaded:
+    # allow_pickle=True is required because refinement_zones is stored as
+    # an inhomogeneous Object array.
+    with np.load(filepath, allow_pickle=True) as loaded:
         # Reconstruct the dictionary
         data = {key: loaded[key] for key in loaded.files}
 
