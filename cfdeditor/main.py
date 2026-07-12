@@ -184,13 +184,18 @@ def run_app():
                     physicseditor._spacing_linked = True
 
                 # Restore refinement zones so they persist across save/load.
+                # Supports both old format (coords, factor) and new (coords, factor, buffer_mult).
                 if 'refinement_zones' in loaded:
                     zones = []
-                    for coords, factor in loaded['refinement_zones']:
+                    for entry in loaded['refinement_zones']:
+                        coords = entry[0]
+                        factor = float(entry[1])
+                        buffer_mult = float(entry[2]) if len(entry) >= 3 else 5.0
                         xs = coords[:, 0]; ys = coords[:, 1]
                         zones.append({
                             'rect': (float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())),
-                            'factor': float(factor),
+                            'factor': factor,
+                            'buffer_mult': buffer_mult,
                         })
                     physicseditor.refinement_zones = zones
 

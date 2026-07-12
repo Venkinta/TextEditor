@@ -264,19 +264,27 @@ class Mesher:
         is base_r / factor, but it transitions smoothly to base_r over a
         buffer zone around each polygon boundary.
         
+        The buffer zone width is controlled by each zone's `buffer_mult`
+        parameter (default 5.0), which multiplies the local refined spacing
+        to give the transition width in world units.
+        
         This avoids a sudden step-change in cell size at zone boundaries,
         which causes numerical "resistance" artefacts in the solver.
         """
         p_shapely = ShapelyPoint(candidate)
-        # buffer_width controls how many world-units the transition spans.
-        # 2 * base_r gives ~2 cell widths of graded transition.
-        buffer_width = 10.0 * base_r
         
         # Find the closest zone and its signed distance
         min_signed_dist = None
         best_factor = None
+        best_buffer_mult = 5.0
         
-        for poly, factor in self.refinement_zones:
+        for zone in self.refinement_zones:
+            # Unpack: zones are (poly, factor) or (poly, factor, buffer_mult)
+            if len(zone) == 3:
+                poly, factor, buffer_mult = zone
+            else:
+                poly, factor = zone
+                buffer_mult = 5.0
             safe_factor = max(factor, 1.1)
             if poly.contains(p_shapely):
                 # Inside: signed distance is negative, measured to the exterior
@@ -290,9 +298,15 @@ class Mesher:
             if min_signed_dist is None or signed_dist < min_signed_dist:
                 min_signed_dist = signed_dist
                 best_factor = safe_factor
+                best_buffer_mult = buffer_mult
         
         if best_factor is None or min_signed_dist is None:
             return base_r
+        
+        # buffer_width controls how many world-units the transition spans.
+        # Default was 10.0 * base_r; now per-zone via buffer_mult * (base_r / factor).
+        local_refined = base_r / best_factor
+        buffer_width = best_buffer_mult * local_refined
         
         # Blend: when signed_dist is -buffer_width → fully refined
         #        when signed_dist is 0 (boundary) → half refined
@@ -332,7 +346,8 @@ class Mesher:
         # Determine the effective minimum r across all refinement zones so
         # the grid cell size is fine enough for the densest zone.
         min_r = r
-        for poly, factor in self.refinement_zones:
+        for zone in self.refinement_zones:
+            factor = zone[1]  # (poly, factor) or (poly, factor, buffer_mult)
             local_r = r / max(factor, 1.1)
             if local_r < min_r:
                 min_r = local_r
@@ -381,7 +396,9 @@ class Mesher:
 
         # 2. Each refinement zone: one seed at its centroid (guaranteed).
         #    If the centroid falls outside the safe zone, try random fallback.
-        for poly, factor in self.refinement_zones:
+        for zone in self.refinement_zones:
+            poly = zone[0]
+            factor = zone[1]
             centroid = np.array([poly.centroid.x, poly.centroid.y])
             seed = centroid
             if not safe_zone.contains(ShapelyPoint(seed)):
@@ -987,8 +1004,10 @@ class Mesher:
             # Each zone is (shapely_polygon, factor). Serialize the polygon's
             # exterior ring as an Nx2 array so it survives np.savez_compressed.
             'refinement_zones': np.array([
-                (np.array(poly.exterior.coords, dtype=np.float64), float(factor))
-                for poly, factor in self.refinement_zones
+                (np.array(poly.exterior.coords, dtype=np.float64),
+                 float(factor),
+                 float(buffer_mult))
+                for poly, factor, buffer_mult in self.refinement_zones
             ], dtype=object),
         }
 

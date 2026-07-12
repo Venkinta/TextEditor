@@ -63,12 +63,13 @@ class PhysicsEditor:
         self.r = 4.0
 
         # --- Refinement Zones ---
-        # Each zone: { 'rect': (x1, y1, x2, y2), 'factor': float }
+        # Each zone: { 'rect': (x1, y1, x2, y2), 'factor': float, 'buffer_mult': float }
         self.refinement_zones = []
         self._drawing_refinement = False  # True while user is dragging a new rect
         self._refine_start = None         # world-coord corner of current drag
         self._refine_current = None       # world-coord opposite corner
         self._refine_factor = 2.0         # default refinement factor for new zones
+        self._refine_buffer_mult = 5.0    # default buffer multiplier for new zones
 
         # --- Boundary Conditions (SI) ---
         self.inlet_velocity = 1.0
@@ -91,7 +92,7 @@ class PhysicsEditor:
 
     # ------------------------------------------------------------------
     def _get_refinement_polygons(self):
-        """Return a list of (shapely_polygon, factor) for all refinement zones."""
+        """Return a list of (shapely_polygon, factor, buffer_mult) for all refinement zones."""
         result = []
         for zone in self.refinement_zones:
             x1, y1, x2, y2 = zone['rect']
@@ -99,7 +100,7 @@ class PhysicsEditor:
             rx1, rx2 = min(x1, x2), max(x1, x2)
             ry1, ry2 = min(y1, y2), max(y1, y2)
             poly = ShapelyPoly([(rx1, ry1), (rx2, ry1), (rx2, ry2), (rx1, ry2)])
-            result.append((poly, zone['factor']))
+            result.append((poly, zone['factor'], zone.get('buffer_mult', 5.0)))
         return result
 
     # ------------------------------------------------------------------
@@ -254,6 +255,14 @@ class PhysicsEditor:
                 imgui.text(f"×{zone['factor']:.1f}")
                 imgui.same_line()
                 imgui.text_colored(f"→ {self.r / zone['factor']:.2f} {u}", 0.6, 1.0, 0.6, 1.0)
+                # Buffer multiplier per zone
+                bm = zone.get('buffer_mult', 5.0)
+                imgui.same_line()
+                _, zone['buffer_mult'] = imgui.input_float(f"##buf_{i}", bm, step=0.5, step_fast=1.0)
+                zone['buffer_mult'] = max(1.0, zone['buffer_mult'])
+                imgui.same_line()
+                local_r = self.r / zone['factor']
+                imgui.text_colored(f"buf×{zone['buffer_mult']:.1f} → {zone['buffer_mult'] * local_r:.2f} {u}", 0.6, 1.0, 0.6, 1.0)
             if to_remove is not None:
                 self.refinement_zones.pop(to_remove)
 
@@ -272,6 +281,8 @@ class PhysicsEditor:
 
             _, self._refine_factor = imgui.input_float("Refinement factor", self._refine_factor, step=0.5, step_fast=1.0)
             self._refine_factor = max(1.1, self._refine_factor)
+            _, self._refine_buffer_mult = imgui.input_float("Buffer multiplier", self._refine_buffer_mult, step=0.5, step_fast=1.0)
+            self._refine_buffer_mult = max(1.0, self._refine_buffer_mult)
 
         imgui.separator()
         mesh_label = "Remesh" if self.has_mesh else "Mesh"
@@ -401,8 +412,9 @@ class PhysicsEditor:
                     self.refinement_zones.append({
                         'rect': (x1, y1, x2, y2),
                         'factor': self._refine_factor,
+                        'buffer_mult': self._refine_buffer_mult,
                     })
-                    print(f"[Refinement] Added zone: ({x1:.2f},{y1:.2f})→({x2:.2f},{y2:.2f}) ×{self._refine_factor:.1f}")
+                    print(f"[Refinement] Added zone: ({x1:.2f},{y1:.2f})→({x2:.2f},{y2:.2f}) ×{self._refine_factor:.1f} buf×{self._refine_buffer_mult:.1f}")
                 self._drawing_refinement = False
                 self._refine_start = None
                 self._refine_current = None
